@@ -11,14 +11,17 @@ services:
       - ../:/workspace
       # Jupyter設定の永続化用
       - jupyter-data:/root/.jupyter
+      # - ${SSH_AUTH_SOCK}:${SSH_AUTH_SOCK}
     ports:
       # Jupyter Labのポート
-      - "9126:9126"
+      - "9129:9129"
       # TensorBoard用ポート
-      - "9127:9127" 
+      - "9130:9130"
+      - "9131:9131" 
     environment:
       - PYTHONPATH=/workspace
       - JUPYTER_ENABLE_LAB=yes
+      # - SSH_AUTH_SOCK=${SSH_AUTH_SOCK}
     # コンテナを起動し続ける
     tty: true
     stdin_open: true

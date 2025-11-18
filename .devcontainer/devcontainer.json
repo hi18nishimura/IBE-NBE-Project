@@ -34,7 +34,7 @@
     "postCreateCommand": "echo '研究で使用する環境を構築しました！'",
 
     // フォワードするポート
-    "forwardPorts": [9126, 9127, 9128],
+    "forwardPorts": [9129, 9130, 9131],
 
     // ポートの属性設定
     "portsAttributes": {

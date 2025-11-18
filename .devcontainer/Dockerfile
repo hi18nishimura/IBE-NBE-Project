@@ -39,8 +39,9 @@ RUN pip install --no-cache-dir \
 RUN pip install --no-cache-dir jupyter jupyterlab
 
 # ポート9126を公開（Jupyter用）
-EXPOSE 9126
-EXPOSE 9127
+EXPOSE 9129
+EXPOSE 9130
+EXPOSE 9131
 
 # デフォルトコマンド
 CMD ["bash"]
