@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  research-env:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: IBE-NBE-Project
+    volumes:
+      # ../ディレクトリをコンテナの/workspaceにマウント
+      - ../:/workspace
+      # Jupyter設定の永続化用
+      - jupyter-data:/root/.jupyter
+    ports:
+      # Jupyter Labのポート
+      - "9126:9126"
+      # TensorBoard用ポート
+      - "9127:9127" 
+    environment:
+      - PYTHONPATH=/workspace
+      - JUPYTER_ENABLE_LAB=yes
+    # コンテナを起動し続ける
+    tty: true
+    stdin_open: true
+    working_dir: /workspace
+    
+    # GPU サポート設定
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all  # 全てのGPUを使用可能にする
+              capabilities: [gpu]
+
+volumes:
+  jupyter-data:

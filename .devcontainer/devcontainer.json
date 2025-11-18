@@ -1,0 +1,54 @@
+{
+    "name": "FEM like Deep Neural Network Environment",
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "research-env",
+    "workspaceFolder": "/workspace",
+    
+    // VS Code カスタマイゼーション
+    "customizations": {
+        "vscode": {
+            // VS Code設定
+            "settings": {
+                "python.defaultInterpreterPath": "/usr/local/bin/python",
+                "python.linting.enabled": true,
+                "python.linting.pylintEnabled": true,
+                "python.formatting.provider": "black",
+                "files.watcherExclude": {
+                    "**/node_modules/**": true
+                }
+            },
+            // インストールする拡張機能
+            "extensions": [
+                "ms-python.python",
+                "ms-python.black-formatter",
+                "ms-python.pylint",
+                "ms-toolsai.jupyter",
+                "ms-vscode.cpptools",
+                "ms-vscode.cmake-tools",
+                "ms-azuretools.vscode-docker"
+            ]
+        }
+    },
+
+    // コンテナ作成後に実行するコマンド
+    "postCreateCommand": "echo '研究で使用する環境を構築しました！'",
+
+    // フォワードするポート
+    "forwardPorts": [9126, 9127, 9128],
+
+    // ポートの属性設定
+    "portsAttributes": {
+        "9126": {
+            "label": "Jupyter Lab",
+            "onAutoForward": "openBrowser"
+        }
+    },
+
+    // リモートユーザー
+    "remoteUser": "root",
+
+    // マウント設定
+    "mounts": [
+        "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached"
+    ]
+}

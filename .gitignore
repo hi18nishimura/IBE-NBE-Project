@@ -1,0 +1,19 @@
+# すべてのファイルを無視
+*
+
+# フォルダは明示的に除外解除（必要に応じて）
+!*/
+
+# .pyファイルは除外解除
+!*requirements.txt
+!*Dockerfile
+!*.py
+!*.
+!*.bat
+!*.md
+!.gitignore
+!.github/
+!devcontainer.json
+!docker-compose.yml
+!*.ipynb
+!liver.dat
