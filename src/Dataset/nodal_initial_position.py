@@ -2,7 +2,7 @@ import pandas as pd
 from pathlib import Path
 
 
-def read_coordinates_from_dat(file_path: str = r"c:\Users\nsmrk\research\IBE-NBE-Project\dataset\liver_model\liver.dat"):
+def read_coordinates_from_dat(file_path: str = None):
     """
     liver.datファイルからCOORDINATESセクションを読み込み、節点座標データを抽出する関数
     
@@ -17,11 +17,21 @@ def read_coordinates_from_dat(file_path: str = r"c:\Users\nsmrk\research\IBE-NBE
         節点番号、X座標、Y座標、Z座標を含むデータフレーム
         カラム名: ['node_id', 'x', 'y', 'z']
     """
+    # デフォルト: リポジトリの dataset/liver_model/liver.dat を使う
+    if file_path is None:
+        repo_root = Path(__file__).resolve().parents[2]
+        default_path = repo_root / 'dataset' / 'liver_model' / 'liver.dat'
+        file_path = default_path
+
     # ファイルパスをPathオブジェクトに変換
     file_path = Path(file_path)
-    
+
     if not file_path.exists():
-        raise FileNotFoundError(f"ファイルが見つかりません: {file_path}")
+        raise FileNotFoundError(
+            f"ファイルが見つかりません: {file_path}\n"
+            f"デフォルトの想定場所は: {repo_root / 'dataset' / 'liver_model' / 'liver.dat'} です。"
+            " 必要なら正しいファイルパスを引数 'file_path' に渡してください。"
+        )
     
     # ファイルを読み込む
     with open(file_path, 'r') as f:
@@ -84,8 +94,9 @@ def save_coordinates_to_csv(df: pd.DataFrame, output_path: str = None):
         保存先のパス（デフォルト: liver.datと同じディレクトリにliver_coordinates.csvとして保存）
     """
     if output_path is None:
-        output_path = r"c:\Users\nsmrk\research\IBE-NBE-Project\dataset\liver_model\liver_coordinates.csv"
-    
+        repo_root = Path(__file__).resolve().parents[2]
+        output_path = repo_root / 'dataset' / 'liver_model_info' / 'liver_coordinates.csv'
+
     output_path = Path(output_path)
     
     # ディレクトリが存在しない場合は作成
@@ -96,6 +107,49 @@ def save_coordinates_to_csv(df: pd.DataFrame, output_path: str = None):
     print(f"座標データを保存しました: {output_path}")
     
     return output_path
+
+
+def read_coordinates(file_path: str = None, return_type: str = 'dataframe'):
+    """
+    指定した .dat ファイルから節点座標を読み込み、DataFrame / リスト辞書 / node_id をキーにした辞書で返すユーティリティ関数。
+
+    Parameters
+    ----------
+    file_path : str, optional
+        読み込む dat ファイルのパス。None の場合はリポジトリ内の
+        `dataset/liver_model/liver.dat` を既定として使用します。
+    return_type : str, optional
+        賞味期限:
+        - 'dataframe' : pandas.DataFrame を返します（既定）。
+        - 'dict' : list[dict]（pandas.DataFrame.to_dict(orient='records')）を返します。
+        - 'by_id' or 'dict_by_id' : node_id をキーにした辞書を返します。形式は {node_id: {'x':..., 'y':..., 'z':...}}。
+
+    Returns
+    -------
+    pd.DataFrame or list[dict] or dict
+        指定された形式で節点座標を返します。
+
+    Raises
+    ------
+    ValueError
+        `return_type` がサポート外の値の場合に発生します。
+    """
+    # 内部の既存関数を利用して DataFrame を取得
+    df = read_coordinates_from_dat(file_path=file_path)
+
+    if return_type == 'dataframe':
+        return df
+    elif return_type == 'dict':
+        return df.to_dict(orient='records')
+    elif return_type in ('by_id', 'dict_by_id'):
+        # node_id をキーにした辞書にする
+        by_id = {
+            int(row['node_id']): {'x': float(row['x']), 'y': float(row['y']), 'z': float(row['z'])}
+            for _, row in df.iterrows()
+        }
+        return by_id
+    else:
+        raise ValueError("return_type must be one of: 'dataframe', 'dict', 'by_id' (or 'dict_by_id')")
 
 
 def main():
