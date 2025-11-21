@@ -244,12 +244,12 @@ def run_marc_parse_job(
 			connectivity_csv=connectivity,
 		)
 
-		_merge_feature_tables(
-			disp_csv,
-			nodal_csv,
-			nodal_all_feature,
-			how=merge_how,
-		)
+		# _merge_feature_tables(
+		# 	disp_csv,
+		# 	nodal_csv,
+		# 	nodal_all_feature,
+		# 	how=merge_how,
+		# )
 		_merge_feature_tables(
 			disp_csv,
 			avg_csv,
