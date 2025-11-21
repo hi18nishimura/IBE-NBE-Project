@@ -11,8 +11,8 @@ def read_tetra_connectivity(file_path: str = None):
             140,  ...   # 次の行の一番最初の整数が要素数
             1,  157,   36,   64,   59,   62,  141,
 
-    上記の例では最初の整数が mesh_id、3~6番目の整数が節点ID (4つ) となるため
-    CSV は columns=['mesh_id','n1','n2','n3','n4'] で出力される。
+    上記の例では最初の整数が element_id、3~6番目の整数が節点ID (4つ) となるため
+    CSV は columns=['element_id','n1','n2','n3','n4'] で出力される。
 
     Parameters
     ----------
@@ -23,7 +23,7 @@ def read_tetra_connectivity(file_path: str = None):
     Returns
     -------
     pd.DataFrame
-        columns=['mesh_id','n1','n2','n3','n4']
+        columns=['element_id','n1','n2','n3','n4']
     """
     if file_path is None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -68,7 +68,7 @@ def read_tetra_connectivity(file_path: str = None):
         # 少なくとも 6 個以上の数字があれば処理（例に倣う）
         if len(parts) >= 6:
             try:
-                mesh_id = int(parts[0])
+                element_id = int(parts[0])
                 # 3~6番目の整数 (1-based) -> parts[2:6]
                 n1 = int(parts[2])
                 n2 = int(parts[3])
@@ -77,13 +77,13 @@ def read_tetra_connectivity(file_path: str = None):
             except Exception:
                 # 形式違いならスキップ
                 continue
-            rows.append([mesh_id, n1, n2, n3, n4])
+            rows.append([element_id, n1, n2, n3, n4])
             read_count += 1
         else:
             # 行が分割されている等の可能性があるが、ここでは簡潔にスキップ
             continue
 
-    df = pd.DataFrame(rows, columns=['mesh_id', 'n1', 'n2', 'n3', 'n4'])
+    df = pd.DataFrame(rows, columns=['element_id', 'n1', 'n2', 'n3', 'n4'])
     return df
 
 
@@ -122,9 +122,9 @@ def read_tetra(file_path: str = None, return_type: str = 'dataframe'):
     return_type : str, optional
         - 'dataframe' : pandas.DataFrame を返す（既定）。
         - 'dict_by_node' or 'by_node' : node_id をキーにした辞書を返す。
-            形式は {node_id: [mesh_id1, mesh_id2, ...], ...}。
-        - 'dict_by_mesh' or 'by_mesh' : mesh_id をキーにした辞書を返す。
-            形式は {mesh_id: [n1,n2,n3,n4], ...}。
+            形式は {node_id: [element_id1, element_id2, ...], ...}。
+        - 'dict_by_mesh' or 'by_mesh' : element_id をキーにした辞書を返す。
+            形式は {element_id: [n1,n2,n3,n4], ...}。
 
     Returns
     -------
@@ -135,16 +135,16 @@ def read_tetra(file_path: str = None, return_type: str = 'dataframe'):
     if return_type == 'dataframe':
         return df
     elif return_type in ('dict_by_node', 'by_node'):
-        # node_id -> list of mesh_ids
+        # node_id -> list of element_ids
         node_map = {}
         for _, row in df.iterrows():
-            mesh_id = int(row['mesh_id'])
+            element_id = int(row['element_id'])
             for col in ['n1', 'n2', 'n3', 'n4']:
                 nid = int(row[col])
-                node_map.setdefault(nid, []).append(mesh_id)
+                node_map.setdefault(nid, []).append(element_id)
         return node_map
     elif return_type in ('dict_by_mesh', 'by_mesh'):
-        mesh_map = {int(row['mesh_id']): [int(row['n1']), int(row['n2']), int(row['n3']), int(row['n4'])]
+        mesh_map = {int(row['element_id']): [int(row['n1']), int(row['n2']), int(row['n3']), int(row['n4'])]
                     for _, row in df.iterrows()}
         return mesh_map
     else:

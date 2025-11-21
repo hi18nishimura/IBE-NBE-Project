@@ -1,6 +1,6 @@
 """Build node adjacency from tetra connectivity and save per-node connection CSV.
 
-This module reads a tetra connectivity CSV with columns ['mesh_id','n1','n2','n3','n4']
+This module reads a tetra connectivity CSV with columns ['element_id','n1','n2','n3','n4']
 and builds an adjacency list where two nodes are connected if they appear in the
 same tetra element. It can save a CSV with one row per node containing:
 
@@ -30,7 +30,7 @@ def build_adjacency_from_tetra_csv(tetra_csv: str) -> Dict[int, Set[int]]:
     Parameters
     ----------
     tetra_csv : str
-        Path to CSV with columns ['mesh_id','n1','n2','n3','n4']
+        Path to CSV with columns ['element_id','n1','n2','n3','n4']
 
     Returns
     -------

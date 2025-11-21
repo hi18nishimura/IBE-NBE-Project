@@ -1,0 +1,15 @@
+# Hydra configuration for marc_parse dataset orchestration
+# 必要に応じて各値を override してください (例: input_dir=dataset/marc/sample).
+
+input_dir: dataset/marc/sample
+output_dir: null
+
+glob: "*.out"
+encoding: utf-8
+
+connectivity: dataset/liver_model_info/tetra_connectivity.csv
+force_condition: liver_forced
+fixed_csv: null
+
+merge_how: inner  # inner または left
+skip_existing: false

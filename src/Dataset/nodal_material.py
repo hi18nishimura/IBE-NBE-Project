@@ -10,7 +10,7 @@ def read_material_sections(file_path: str = None) -> List[Dict[str, Any]]:
     """
     liver.dat 内の Isotropic/material セクションを抽出して各マテリアルの物性値と対応メッシュIDを返す。
 
-    Returns a list of dicts with keys: 'name', 'E', 'nu', 'mesh_ids'
+    Returns a list of dicts with keys: 'name', 'E', 'nu', 'element_ids'
     """
     if file_path is None:
         repo_root = Path(__file__).resolve().parents[2]
@@ -47,7 +47,7 @@ def read_material_sections(file_path: str = None) -> List[Dict[str, Any]]:
 
             # find subsequent lines that likely contain mesh ids
             # collect up to a small window of lines and extract integers robustly
-            mesh_ids = []
+            element_ids = []
             j = prop_line_idx + 1
             collected = []
             max_lookahead = 12
@@ -71,7 +71,7 @@ def read_material_sections(file_path: str = None) -> List[Dict[str, Any]]:
             if collected:
                 combined = ' '.join(collected)
 
-                def extract_mesh_ids_from_text(s: str) -> List[int]:
+                def extract_element_ids_from_text(s: str) -> List[int]:
                     # split on commas/spaces
                     toks = re.split(r'[,\s]+', s.strip())
                     out: List[int] = []
@@ -99,9 +99,9 @@ def read_material_sections(file_path: str = None) -> List[Dict[str, Any]]:
                             i += 1
                     return out
 
-                mesh_ids = [m for m in extract_mesh_ids_from_text(combined) if m != 0]
+                element_ids = [m for m in extract_element_ids_from_text(combined) if m != 0]
 
-            sections.append({'name': name, 'E': E, 'nu': nu, 'mesh_ids': mesh_ids})
+            sections.append({'name': name, 'E': E, 'nu': nu, 'element_ids': element_ids})
         i += 1
 
     return sections
@@ -111,20 +111,20 @@ def map_materials_to_nodes(file_path: str = None, output_csv: str = None) -> Pat
     """
     マテリアル定義（メッシュ単位）を読み取り、各節点に対応する物性値を割り当てて CSV に保存する。
 
-    CSV のカラム: node_id, E, nu, material, mesh_ids
+    CSV のカラム: node_id, E, nu, material, element_ids
 
     Returns: Path to saved CSV
     """
     # read material sections
     sections = read_material_sections(file_path=file_path)
 
-    # build mesh_id -> material mapping
+    # build element_id -> material mapping
     mesh_material = {}
     for sec in sections:
         name = sec.get('name')
         E = sec.get('E')
         nu = sec.get('nu')
-        for mid in sec.get('mesh_ids', []):
+        for mid in sec.get('element_ids', []):
             mesh_material[int(mid)] = {'material': name, 'E': E, 'nu': nu}
 
     # read tetra connectivity as mesh->nodes
@@ -132,30 +132,30 @@ def map_materials_to_nodes(file_path: str = None, output_csv: str = None) -> Pat
 
     # node_id -> list of assignments
     node_assignments: Dict[int, List[Dict[str, Any]]] = {}
-    for mesh_id, nodes in mesh_map.items():
-        mat = mesh_material.get(int(mesh_id))
+    for element_id, nodes in mesh_map.items():
+        mat = mesh_material.get(int(element_id))
         if mat is None:
             # no material assigned to this mesh
             continue
         for nid in nodes:
-            node_assignments.setdefault(int(nid), []).append({'mesh_id': int(mesh_id),
+            node_assignments.setdefault(int(nid), []).append({'element_id': int(element_id),
                                                                'material': mat.get('material'),
                                                                'E': mat.get('E'),
                                                                'nu': mat.get('nu')})
 
-    # Prepare rows for CSV - if multiple assignments, we record mesh_ids list and pick first material
+    # Prepare rows for CSV - if multiple assignments, we record element_ids list and pick first material
     rows = []
     for nid, assigns in sorted(node_assignments.items()):
-        mesh_ids = [str(a['mesh_id']) for a in assigns]
+        element_ids = [str(a['element_id']) for a in assigns]
         # pick first assignment as canonical (deterministic)
         first = assigns[0]
         rows.append({'node_id': nid,
                      'E': first.get('E'),
                      'nu': first.get('nu'),
                      'material': first.get('material'),
-                     'mesh_ids': ';'.join(mesh_ids)})
+                     'element_ids': ';'.join(element_ids)})
 
-    df = pd.DataFrame(rows, columns=['node_id', 'E', 'nu', 'material', 'mesh_ids'])
+    df = pd.DataFrame(rows, columns=['node_id', 'E', 'nu', 'material', 'element_ids'])
 
     # output path default
     if output_csv is None:

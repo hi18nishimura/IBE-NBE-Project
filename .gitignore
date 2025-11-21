@@ -16,4 +16,4 @@
 !devcontainer.json
 !docker-compose.yml
 !*.ipynb
-!liver.dat
+!*.yaml
