@@ -31,9 +31,15 @@ except ModuleNotFoundError as exc:  # pragma: no cover - 起動時に気付き�
 	raise RuntimeError('Dataset.pattern をインポートできません。src/ 配下の構成を確認してください。') from exc
 
 try:
-	from Dataset import feature_disp_nodal, feature_stress_elements, feature_stress_nodal
+	from Dataset import (
+		convert_csv_feather,
+		research_max_value,
+		feature_disp_nodal,
+		feature_stress_elements,
+		feature_stress_nodal,
+	)
 except ModuleNotFoundError as exc:  # pragma: no cover - 同様に起動時に知らせる
-	raise RuntimeError('Dataset.feature_* モジュールをインポートできません。src/ 配下の構成を確認してください。') from exc
+	raise RuntimeError('Dataset.convert_csv_feather / research_max_value / feature_* モジュールをインポートできません。src/ 配下の構成を確認してください。') from exc
 
 
 def _resolve_path(path_like: str) -> Path:
@@ -339,6 +345,51 @@ def run_marc_parse_hydra(overrides: List[str]) -> None:
 		sys.argv = original_argv
 
 
+@hydra.main(version_base=None, config_path=str(CONFIG_DIR), config_name='convert_binary')
+def _convert_binary_hydra_entry(cfg: DictConfig) -> None:
+	"""Hydra 設定から CSV -> Feather 変換を実行する"""
+
+	print('[hydra] 使用設定:\n' + OmegaConf.to_yaml(cfg))
+
+	csv_dir = _resolve_path(str(cfg.csv_dir))
+	output_dir = _resolve_path(str(cfg.output_dir))
+
+	glob_pattern = str(cfg.get('glob', '*.csv'))
+	encoding = str(cfg.get('encoding', 'utf-8'))
+	compression = cfg.get('compression')
+	if compression in ('null', '', None):
+		compression = None
+	skip_existing = bool(cfg.get('skip_existing', False))
+
+	convert_csv_feather.convert_directory(
+		csv_dir,
+		output_dir,
+		glob_pattern=glob_pattern,
+		encoding=encoding,
+		compression=compression,
+		skip_existing=skip_existing,
+	)
+
+	if bool(cfg.get('max_value_research', False)):
+		feather_glob = str(cfg.get('feather_glob', '*.feather'))
+		research_max_value.analyze_feather_directory(
+			output_dir,
+			output_dir=output_dir,
+			glob_pattern=feather_glob,
+		)
+
+
+def run_convert_binary_hydra(overrides: List[str]) -> None:
+	"""Hydra エントリポイント (convert_binary) を override 付きで実行する"""
+
+	original_argv = sys.argv
+	sys.argv = [__file__] + overrides
+	try:
+		_convert_binary_hydra_entry()
+	finally:
+		sys.argv = original_argv
+
+
 def build_parser() -> argparse.ArgumentParser:
 	parser = argparse.ArgumentParser(description='Dataset generation orchestrator (pattern, ...).')
 	subparsers = parser.add_subparsers(dest='command', required=True)
@@ -357,6 +408,13 @@ def build_parser() -> argparse.ArgumentParser:
 		help='Hydra の override 文字列 (例: input_dir=dataset/marc/sample glob="*.out")'
 	)
 
+	convert_parser = subparsers.add_parser('convert_binary', help='CSV から Feather 形式へ一括変換を実行')
+	convert_parser.add_argument(
+		'overrides',
+		nargs='*',
+		help='Hydra の override 文字列 (例: split=valid glob="*_features.csv")'
+	)
+
 	return parser
 
 
@@ -368,6 +426,8 @@ def main() -> None:
 		run_pattern_hydra(args.overrides or [])
 	elif args.command == 'marc_parse':
 		run_marc_parse_hydra(args.overrides or [])
+	elif args.command == 'convert_binary':
+		run_convert_binary_hydra(args.overrides or [])
 	else:  # pragma: no cover - サブコマンド追加時の安全策
 		parser.error(f"Unknown command: {args.command}")
 

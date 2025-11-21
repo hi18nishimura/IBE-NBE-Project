@@ -1,21 +1,33 @@
-phase: valid
+# Hydra configuration for CSV -> Feather conversion job.
+# phase オプション (train / valid / test) に応じて入出力ディレクトリを切り替えます。
+
+phase: train
+
 csv_dirs:
   train: /workspace/dataset/marc_parse/sample/train/all_feature
   valid: /workspace/dataset/marc_parse/sample/valid/all_feature
   test: /workspace/dataset/marc_parse/sample/test/all_feature
+
 output_dirs:
   train: /workspace/dataset/bin/sample/train
   valid: /workspace/dataset/bin/sample/valid
   test: /workspace/dataset/bin/sample/test
+
 max_value_research_flags:
   train: true
   valid: false
   test: false
+
 csv_dir: ${csv_dirs.${phase}}
 output_dir: ${output_dirs.${phase}}
-glob: '*.csv'
+
+glob: "*.csv"
 encoding: utf-8
 compression: null
 skip_existing: false
-feather_glob: '*.feather'
+feather_glob: "*.feather"
 max_value_research: ${max_value_research_flags.${phase}}
+
+hydra:
+  run:
+    dir: /workspace/config/dataset
