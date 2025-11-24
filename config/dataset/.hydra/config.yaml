@@ -1,12 +1,12 @@
-phase: valid
+phase: test
 csv_dirs:
-  train: /workspace/dataset/marc_parse/sample/train/all_feature
-  valid: /workspace/dataset/marc_parse/sample/valid/all_feature
-  test: /workspace/dataset/marc_parse/sample/test/all_feature
+  train: /workspace/dataset/marc_parse/toy_all_model/train/all_feature
+  valid: /workspace/dataset/marc_parse/toy_all_model/valid/all_feature
+  test: /workspace/dataset/marc_parse/toy_all_model/test/all_feature
 output_dirs:
-  train: /workspace/dataset/bin/sample/train
-  valid: /workspace/dataset/bin/sample/valid
-  test: /workspace/dataset/bin/sample/test
+  train: /workspace/dataset/bin/toy_all_model/train
+  valid: /workspace/dataset/bin/toy_all_model/valid
+  test: /workspace/dataset/bin/toy_all_model/test
 max_value_research_flags:
   train: true
   valid: false

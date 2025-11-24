@@ -71,11 +71,45 @@ def _fetch_node_coordinates(
 
 def _prepare_group_matrix(group: pd.DataFrame) -> np.ndarray:
 	points = group[["x", "y", "z"]].to_numpy(dtype=float)
-	if points.shape != (4, 3):
+	if points.shape[0] != 4:
+		n_points = getattr(group.get("point_id"), "nunique", lambda: points.shape[0])()
 		raise StressComputationError(
-			f"element_id={group.element_id.iloc[0]} time={group.time.iloc[0]} で積分点が {points.shape[0]} 個しかありません"
+			f"element_id={group.element_id.iloc[0]} time={group.time.iloc[0]} で積分点 (point_id) が {n_points} 個しかありません"
 		)
 	return points
+
+
+def _collapse_integration_rows(group: pd.DataFrame) -> pd.DataFrame:
+	"""Average duplicate integration points so that each point_id appears once."""
+	columns_to_average = ["x", "y", "z", *STRESS_COLUMNS]
+	missing = [column for column in ["point_id", *columns_to_average] if column not in group.columns]
+	if missing:
+		raise ValueError(f"stress_elements.csv に必要な列が不足しています: {missing}")
+	unique_points = group["point_id"].nunique()
+	if unique_points == 4 and len(group) == 4:
+		return group.reset_index(drop=True)
+	point_sums: Dict[int, np.ndarray] = {}
+	point_counts: Dict[int, int] = {}
+	for row in group.itertuples(index=False):
+		point_id = getattr(row, "point_id")
+		values = np.array([getattr(row, col) for col in columns_to_average], dtype=float)
+		if point_id not in point_sums:
+			point_sums[point_id] = values
+			point_counts[point_id] = 1
+		else:
+			point_sums[point_id] += values
+			point_counts[point_id] += 1
+	rows: List[dict[str, float | int]] = []
+	for point_id in sorted(point_sums, key=lambda pid: float(pid)):
+		avg_values = point_sums[point_id] / point_counts[point_id]
+		row_dict: dict[str, float | int] = {"point_id": point_id}
+		for column, value in zip(columns_to_average, avg_values):
+			row_dict[column] = float(value)
+		rows.append(row_dict)
+	collapsed = pd.DataFrame(rows)
+	collapsed["time"] = group["time"].iloc[0]
+	collapsed["element_id"] = group["element_id"].iloc[0]
+	return collapsed
 
 
 def compute_nodal_stresses(
@@ -97,6 +131,7 @@ def compute_nodal_stresses(
 			raise StressComputationError(f"element_id={element_id} が tetra_connectivity.csv に存在しません")
 		node_ids = connectivity_lookup[element_id]
 		group = group.sort_values("point_id")
+		group = _collapse_integration_rows(group)
 		integration_points = _prepare_group_matrix(group)
 		integration_matrix = _augment_coordinates(integration_points)
 		inv_integration = _safe_inverse(integration_matrix)

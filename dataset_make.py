@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 import pandas as pd
+import traceback
+import datetime
 import hydra
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
@@ -211,8 +213,9 @@ def run_marc_parse_job(
 
 	resolved_output = (output_dir or (input_dir / 'marc_parse_output')).resolve()
 	dirs = _prepare_output_dirs(resolved_output)
+	skipped_files: list[str] = []
 	files = _iter_target_files(input_dir, glob_pattern)
-	for file_path in files:
+	for idx,file_path in enumerate(files):
 		stem = file_path.stem
 		print(f"[marc_parse] Processing {file_path}")
 
@@ -223,32 +226,48 @@ def run_marc_parse_job(
 		nodal_all_feature = dirs['all_feature'] / f"{stem}_nodal_features.csv"
 		avg_all_feature = dirs['all_feature'] / f"{stem}_nodal_average_features.csv"
 
-		if skip_existing and all(
-			path.exists()
-			for path in (disp_csv, stress_elem_csv, nodal_csv, avg_csv, nodal_all_feature, avg_all_feature)
-		):
-			print(f"[marc_parse] Skip {file_path.name} (all outputs exist)")
-			continue
+		if skip_existing:
+			# If the final aggregated feature file exists, treat as fully processed and skip.
+			if avg_all_feature.exists():
+				print(f"[marc_parse] Skip {file_path.name} (already processed: {avg_all_feature.name} exists)")
+				#skipped_files.append(str(file_path))
+				continue
+			# Fallback: only skip when all expected outputs exist (legacy behavior)
+			if all(
+				path.exists()
+				for path in (disp_csv, stress_elem_csv, nodal_csv, avg_csv, nodal_all_feature, avg_all_feature)
+			):
+				print(f"[marc_parse] Skip {file_path.name} (all outputs exist)")
+				#skipped_files.append(str(file_path))
+				continue
 
-		disp_csv = _run_feature_disp(
-			file_path,
-			dirs['disp'],
-			encoding=encoding,
-			force_condition=force_condition,
-			fixed_csv=fixed_csv,
-		)
-		stress_elem_csv = _run_feature_stress_elements(
-			file_path,
-			dirs['stress_elements'],
-			encoding=encoding,
-		)
-		nodal_csv, avg_csv = _run_feature_stress_nodal(
-			stress_elem_csv,
-			disp_csv,
-			dirs['stress_nodal'],
-			encoding=encoding,
-			connectivity_csv=connectivity,
-		)
+		try:
+			disp_csv = _run_feature_disp(
+				file_path,
+				dirs['disp'],
+				encoding=encoding,
+				force_condition=force_condition,
+				fixed_csv=fixed_csv,
+			)
+			stress_elem_csv = _run_feature_stress_elements(
+				file_path,
+				dirs['stress_elements'],
+				encoding=encoding,
+			)
+			nodal_csv, avg_csv = _run_feature_stress_nodal(
+				stress_elem_csv,
+				disp_csv,
+				dirs['stress_nodal'],
+				encoding=encoding,
+				connectivity_csv=connectivity,
+			)
+		except Exception as exc:  # catch processing errors per-file and continue
+			print(f"[marc_parse] Error processing {file_path.name}: {exc}")
+			tb = traceback.format_exc()
+			print(tb)
+			print(f"[marc_parse] Skipping {file_path.name} and continuing with next file.")
+			skipped_files.append(str(file_path))
+			continue
 
 		# _merge_feature_tables(
 		# 	disp_csv,
@@ -262,7 +281,20 @@ def run_marc_parse_job(
 			avg_all_feature,
 			how=merge_how,
 		)
-		print(f"[marc_parse] Done {file_path.name}")
+		print(f"[marc_parse: {idx+1}/{len(files)}] Done {file_path.name}")
+
+	# Write skipped files list if any
+	if skipped_files:
+		out_path = resolved_output / 'skipped_files.txt'
+		try:
+			with out_path.open('w', encoding='utf-8') as fh:
+				fh.write(f"# Skipped files: {len(skipped_files)}\n")
+				fh.write(f"# Generated at: {datetime.datetime.utcnow().isoformat()}Z\n")
+				for p in skipped_files:
+					fh.write(p + "\n")
+			print(f"[marc_parse] Wrote skipped files list to {out_path}")
+		except Exception:
+			print(f"[marc_parse] Failed to write skipped files list to {out_path}")
 
 
 @hydra.main(version_base=None, config_path=str(CONFIG_DIR), config_name='pattern')

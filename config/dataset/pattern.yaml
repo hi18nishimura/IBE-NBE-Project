@@ -1,13 +1,11 @@
 # Hydra config for Dataset/pattern.py runner
+phase: train
+output_names:
+  train: toy_all_model/train
+  valid: toy_all_model/valid
+  test: toy_all_model/test
 
-# mode: train
-# output_name: toy_all_model/train
-
-# mode: valid
-# output_name: toy_all_model/valid
-
-mode: test
-output_name: toy_all_model/test
+output_name: ${output_names.${phase}}
 
 input: dataset/liver_model/liver.dat
 liver:

@@ -112,11 +112,11 @@ hydra:
     hydra:
     - hydra.mode=RUN
     task:
-    - phase=valid
+    - phase=test
   job:
     name: dataset_make
     chdir: null
-    override_dirname: phase=valid
+    override_dirname: phase=test
     id: ???
     num: ???
     config_name: convert_binary
