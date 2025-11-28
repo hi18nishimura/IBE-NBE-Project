@@ -18,4 +18,6 @@
 !*.ipynb
 !*.yaml
 
-outputs/
+outputs/*
+NBE/*
+IBE/*

@@ -1,9 +1,0 @@
-input_dir: /workspace/dataset/marc/toy_all_model/train
-output_dir: /workspace/dataset/marc_parse/toy_all_model/train
-glob: '*.out'
-encoding: utf-8
-connectivity: /workspace/dataset/liver_model_info/tetra_connectivity.csv
-force_condition: liver_forced
-fixed_csv: /workspace/dataset/liver_model_info/fixed_nodes.csv
-merge_how: inner
-skip_existing: false
