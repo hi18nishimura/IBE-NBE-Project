@@ -9,5 +9,6 @@ def convert_nbe_output_to_input(nbe_outputs_dict,neighborhood_dict):
         input_list = []
         for node_id in neighborhood_dict[key]:
             input_list.append(nbe_outputs_dict[node_id])
-        inputs_dict[key] = torch.stack(input_list,dim=1)
+    
+        inputs_dict[key] = torch.cat(input_list)
     return inputs_dict

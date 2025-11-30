@@ -5,7 +5,7 @@
 def get_nbe_dataset_time1_data(nbe_dataset_dict, max_node, idx):
     node_time1_data = {}
     all_targets = {}
-    for node_id in max_node:
+    for node_id in range(1,max_node+1):
         data = nbe_dataset_dict[node_id].__getitem__(idx)
         inputs,targets = data["inputs"], data["targets"]
         time1_data = inputs[0,:]

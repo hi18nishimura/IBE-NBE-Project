@@ -55,7 +55,7 @@ def parse_args():
     p.add_argument("--val_dir", required=True)
     p.add_argument("--node_min", type=int, required=True)
     p.add_argument("--node_max", type=int, required=True)
-    p.add_argument("--concurrency", type=int, default=8)
+    p.add_argument("--concurrency", type=int, default=20)
     p.add_argument("--exist_model", action="store_true", help="If set, skip launching for a node when per-node 'best.pth' already exists")
     p.add_argument("--python", default=sys.executable, help="Python executable to run trainer")
     p.add_argument("--save_dir", default="outputs/peephole_train")

@@ -213,6 +213,8 @@ class NbeDataset(Dataset):
                     continue
                 count += 1
             self.node_feature_counts[nid] = count
+            if nid==self.node_id:
+                self.target_feature_size = count
 
         # precompute slices (start inclusive, end exclusive) within the per-timestep concatenated vector
         self.input_slices: Dict[int, tuple[int, int]] = {}
@@ -225,6 +227,7 @@ class NbeDataset(Dataset):
 
         # 抽出するインデックスの情報を取得する
         self.extract_dataframe_idx,self.extract_fixed_idx = self._build_extraction_plan(pd.read_feather(self.files[0]))
+        
         #print(self.node_order)
         # preload option: if requested, process each file now into tensors and
         # store a list of processed dicts {'inputs','targets'} in self._data_cache.
@@ -335,6 +338,7 @@ class NbeDataset(Dataset):
         df = oka_normalize_dataframe_fast(df, self.pwidth_array_broadcasted, self.alpha)
         # 固定節点のdx,dy,dzをNaNにする
         df.loc[self.extract_fixed_idx, ['dx', 'dy', 'dz']] = np.nan
+
         data_arr = df.values
 
         data_arr = data_arr[~np.isnan(data_arr)]

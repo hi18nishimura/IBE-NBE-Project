@@ -10,16 +10,21 @@ def oka_denormalize(x, max_value, alpha=8.0):
     p_in = s * max_value * magnitude
     return p_in
 
-def denormalize_nbe_outputs(all_outputs_list: list[dict[int, torch.Tensor]], all_nbe_params: dict[int, dict[str, int]]):
-    denormalized_outputs_list = []
-    for time_outputs in all_outputs_list:
+def denormalize_nbe_outputs(all_outputs_list: list[dict[int, torch.Tensor]], all_nbe_params: dict[int, dict[str, int]],all_node_dataset: dict[int, any]) -> list[dict[int, torch.Tensor]]:
+    denormalized_outputs_dict = {}
+    zero_disp_tensor = torch.tensor([0.5, 0.5, 0.5])
+    for time, time_outputs in enumerate(all_outputs_list):
         denormalized_time_outputs = {}
         for node_id, output in time_outputs.items():
             max_value_list = []
-            for max_value in all_nbe_params[node_id]["max_values"].values():
-                max_value_list.append(max_value)
+            for col in all_node_dataset[node_id].columns:
+                max_value_list.append(all_node_dataset[node_id].max_map[col])
             max_values = torch.tensor(max_value_list, device=output.device)
-            denormalized_output = oka_denormalize(output, max_values)  # パワー正規化の逆変換
+            if output.shape[0] == 6:
+                output_reshape = torch.cat([zero_disp_tensor.to(output.device),output],dim=0)
+                denormalized_output = oka_denormalize(output_reshape, max_values)  # パワー正規化の逆変換
+            else:
+                denormalized_output = oka_denormalize(output, max_values)  # パワー正規化の逆変換
             denormalized_time_outputs[node_id] = denormalized_output.detach().cpu().numpy()
-        denormalized_outputs_list.append(denormalized_time_outputs)
-    return denormalized_outputs_list
+        denormalized_outputs_dict[time+2]=denormalized_time_outputs
+    return denormalized_outputs_dict

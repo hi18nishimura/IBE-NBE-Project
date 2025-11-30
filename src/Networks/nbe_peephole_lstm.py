@@ -147,6 +147,8 @@ class NbePeepholeLSTM(nn.Module):
             h = torch.stack(h_new, dim=0)
             c = torch.stack(c_new, dim=0)
             out = self.out_proj(layer_input)
+            # apply sigmoid and scale to range [0.1, 0.9]
+            out = torch.sigmoid(out) * 0.8 + 0.1
             outputs.append(out.unsqueeze(1))
             # optionally overwrite the beginning of the next input with the produced output
             if rewrite_next and t + 1 < seq_len:
@@ -187,6 +189,8 @@ class NbePeepholeLSTM(nn.Module):
         h = torch.stack(h_new, dim=0)
         c = torch.stack(c_new, dim=0)
         out = self.out_proj(layer_input)
+        # apply sigmoid and scale to range [0.1, 0.9]
+        out = torch.sigmoid(out) * 0.8 + 0.1
         return out, (h, c)
 
 

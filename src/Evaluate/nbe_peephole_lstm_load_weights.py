@@ -25,18 +25,56 @@ def find_best_checkpoint(root: Path) -> Optional[Path]:
 def load_best_checkpoint(
 	root: str | Path,
 	map_location: Optional[torch.device | str] = None,
+	weights_only: bool = True,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Path]]:
 	"""Load checkpoint dict from the first 'best.pth' under `root`.
 
-	Returns (checkpoint_dict or None, path_to_ckpt or None).
+	This function attempts a weights-only load by default (safe, tensors only).
+	If that fails and `weights_only` is True we will retry a full load with
+	a permissive safe-globals context for common non-tensor objects (e.g. OmegaConf)
+	when available. Returns (checkpoint_dict or None, path_to_ckpt or None).
 	"""
 	ckpt_path = find_best_checkpoint(Path(root))
 	if ckpt_path is None:
 		return None, None
 	if map_location is None:
 		map_location = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	ckpt = torch.load(str(ckpt_path), map_location=map_location)
-	return ckpt, ckpt_path
+
+	# Try weights-only load first (supported in PyTorch >=2.6). If the current
+	# torch implementation does not accept weights_only, fall back to the
+	# older signature without that argument.
+	try:
+		try:
+			ckpt = torch.load(str(ckpt_path), map_location=map_location, weights_only=weights_only)
+			return ckpt, ckpt_path
+		except TypeError:
+			# torch.load doesn't accept weights_only (older torch). Call without it.
+			ckpt = torch.load(str(ckpt_path), map_location=map_location)
+			return ckpt, ckpt_path
+	except Exception as exc:
+		# If weights_only mode failed and the caller allowed a full load, try
+		# again with weights_only=False and, if available, allow OmegaConf types.
+		if not weights_only:
+			raise
+		try:
+			import omegaconf
+
+			safe_ctx = getattr(torch.serialization, "safe_globals", None)
+			add_safe = getattr(torch.serialization, "add_safe_globals", None)
+			if safe_ctx is not None:
+				with safe_ctx([omegaconf.base.ContainerMetadata]):
+					ckpt = torch.load(str(ckpt_path), map_location=map_location, weights_only=False)
+			elif add_safe is not None:
+				# modify global allowlist then load
+				add_safe([omegaconf.base.ContainerMetadata])
+				ckpt = torch.load(str(ckpt_path), map_location=map_location, weights_only=False)
+			else:
+				# last resort: attempt full load (may raise UnpicklingError)
+				ckpt = torch.load(str(ckpt_path), map_location=map_location)
+			return ckpt, ckpt_path
+		except Exception:
+			# Re-raise the original exception for diagnostics
+			raise exc
 
 
 def build_model_from_ckpt(
@@ -99,7 +137,7 @@ def load_model_from_dir(
 
 	Returns (model or None, ckpt dict or None, ckpt_path or None).
 	"""
-	ckpt, path = load_best_checkpoint(root, map_location=map_location)
+	ckpt, path = load_best_checkpoint(root, map_location=map_location, weights_only=False)
 	if ckpt is None:
 		return None, None, None
 	model, ckpt_loaded = build_model_from_ckpt(ckpt, model_ctor, model_ctor_kwargs, map_location=map_location)
