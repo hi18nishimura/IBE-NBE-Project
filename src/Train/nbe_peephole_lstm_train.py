@@ -227,7 +227,7 @@ def run_training(cfg: TrainConfig) -> None:
             writer.add_scalar("loss/val", val_loss, epoch)
             writer.add_scalar("lr", optimizer.param_groups[0]["lr"], epoch)
 
-            improved = val_loss + 1e-12 < best_val
+            improved = val_loss + 1e-5 < best_val
             if improved:
                 best_val = val_loss
                 epochs_since_improve = 0

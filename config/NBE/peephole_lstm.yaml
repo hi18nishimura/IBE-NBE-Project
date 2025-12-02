@@ -4,7 +4,7 @@
 train_dir: /workspace/dataset/bin/toy_all_model/train
 val_dir: /workspace/dataset/bin/toy_all_model/valid
 node_id: 1
-global_normalize: True
+global_normalize: False
 
 preload: false
 glob: "*.feather"
@@ -33,5 +33,5 @@ max_lr_reductions: 10
 early_stop_patience: 15
 
 # Misc
-save_dir: NBE/peepholeLSTM_Relative
+save_dir: NBE/peepholeLSTM_Local
 seed: 42
