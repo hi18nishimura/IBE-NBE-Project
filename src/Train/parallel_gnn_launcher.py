@@ -22,8 +22,9 @@ import os
 import shlex
 import subprocess
 import sys
+import torch
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 
 def make_cmd(python: str, train_dir: str, val_dir: str, node_id: int, save_dir: str, config_name: str, overrides: List[str]) -> List[str]:
@@ -44,12 +45,21 @@ def make_cmd(python: str, train_dir: str, val_dir: str, node_id: int, save_dir: 
     return cmd
 
 
-def run_job(cmd: List[str], log_path: Path) -> int:
+def run_job(cmd: List[str], log_path: Path, gpu_id: Optional[int] = None) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Set specific GPU if requested
+    env = os.environ.copy()
+    if gpu_id is not None:
+        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+
     with open(log_path, "ab", buffering=0) as f:
         # write header
         f.write(("\n--- LAUNCH CMD: %s\n" % (shlex.join(cmd))).encode())
-        proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT)
+        if gpu_id is not None:
+            f.write(("\n--- GPU ID: %d\n" % gpu_id).encode())
+            
+        proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, env=env)
         ret = proc.wait()
         f.write((f"\n--- EXIT {ret}\n").encode())
     return ret
@@ -76,10 +86,13 @@ def main():
     node_ids = list(range(args.node_min, args.node_max + 1))
     print(f"Launching GNN training for nodes {args.node_min}..{args.node_max} (total {len(node_ids)}) with concurrency={args.concurrency}")
 
+    device_cnt = torch.cuda.device_count()
+    print(f"Available GPUs: {device_cnt}")
+
     tasks = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as ex:
         futures = {}
-        for nid in node_ids:
+        for i, nid in enumerate(node_ids):
             per_save = str(Path(args.save_dir) / str(nid))
             # If user requested skipping when a saved model exists, check and continue
             if args.exist_model:
@@ -90,7 +103,11 @@ def main():
             
             cmd = make_cmd(args.python, args.train_dir, args.val_dir, nid, args.save_dir, args.config_name, args.override)
             log_path = Path(per_save) / "launcher.log"
-            fut = ex.submit(run_job, cmd, log_path)
+            
+            # Assign GPU round-robin based on index
+            gpu_id = i % device_cnt if device_cnt > 0 else None
+            
+            fut = ex.submit(run_job, cmd, log_path, gpu_id)
             futures[fut] = (nid, log_path)
 
         # collect
