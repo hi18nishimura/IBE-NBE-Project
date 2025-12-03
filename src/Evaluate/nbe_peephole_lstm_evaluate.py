@@ -60,17 +60,24 @@ if __name__ == "__main__":
     parser.add_argument("--target_idx", type=int, default=0)
     parser.add_argument("--hidden_size", type=int, default=256)
     parser.add_argument("--num_layers", type=int, default=2)
-    parser.add_argument("--dropout", type=float, default=0.0)
+    parser.add_argument("--dropout", type=float, default=0.5)
     parser.add_argument("--device", default=None, help="torch device string, e.g. cpu or cuda:0")
+    parser.add_argument("--global_normalize", action="store_true", help="Whether to apply global normalization to the dataset")
     args = parser.parse_args()
 
     # NbeDatasetの読み込み
     print("NbeDatasetの初期化")
-    all_nbe_dataset = all_node_nbe_dataset_init(args.dataset_dir, args.all_node_id, global_normalize=True)
+    all_nbe_dataset = all_node_nbe_dataset_init(args.dataset_dir,
+                                                args.all_node_id, 
+                                                global_normalize=args.global_normalize)
     correct_df = pd.read_feather(all_nbe_dataset[1].files[0])
     # Nbeパラメータの取得
     print("Nbeパラメータの取得")
-    all_nbe_params, all_neighbor_node = all_node_nbe_params(all_nbe_dataset, args.hidden_size, args.num_layers, args.dropout)
+    all_nbe_params, all_neighbor_node = all_node_nbe_params(all_nbe_dataset, 
+                                                            args.hidden_size, 
+                                                            args.num_layers, 
+                                                            args.dropout)
+    
     # NBEモデルの取得
     print("NBEモデルの取得")
     all_nbe = all_nbe_weights_load(all_nbe_params, args.weight_dir, map_location=args.device)

@@ -17,13 +17,13 @@ num_workers: 2
 # Model
 hidden_size: 256
 num_layers: 2
-dropout: 0.0
+dropout: 0.5
 output_size: null
 
 # Optimization
 lr: 0.001
 weight_decay: 0.0
-epochs: 300
+epochs: 100
 
 # LR / early stopping
 lr_patience: 10
