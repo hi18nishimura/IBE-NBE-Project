@@ -87,3 +87,4 @@ zipp==3.23.0
 tensorboard
 hydra-core
 torch-geometric
+setproctitle
