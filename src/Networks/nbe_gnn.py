@@ -17,7 +17,8 @@ class NbeGNN(nn.Module):
         output_size: int, 
         num_layers: int = 2, 
         dropout: float = 0.5,
-        gnn_type: str = 'GCN'
+        gnn_type: str = 'GCN',
+        finetune: bool = False
     ) -> None:
         super().__init__()
         self.input_size = input_size
@@ -26,6 +27,7 @@ class NbeGNN(nn.Module):
         self.num_layers = num_layers
         self.dropout = dropout
         self.gnn_type = gnn_type
+        self.finetune = finetune
 
         self.convs = nn.ModuleList()
         
@@ -68,7 +70,15 @@ class NbeGNN(nn.Module):
             outputs = []
             for t in range(seq_len):
                 # Process each time step
-                out_t = self._forward_single(x[t], edge_index)
+                if self.finetune and t != 0:
+                    # x[t] をコピーして新しいテンソルを作成
+                    current_input = x[t].clone()
+                    # 予測値で上書き
+                    current_input[:, :self.output_size] = out_t
+                    # 推論
+                    out_t = self._forward_single(current_input, edge_index)
+                else:
+                    out_t = self._forward_single(x[t], edge_index)
                 outputs.append(out_t)
             return torch.stack(outputs, dim=0)
         else:
@@ -87,6 +97,9 @@ class NbeGNN(nn.Module):
         # Apply sigmoid and scale to [0.1, 0.9]
         x = torch.sigmoid(x) * 0.8 + 0.1
         return x
+
+    def set_finetune(self, finetune: bool) -> None:
+        self.finetune = finetune
 
 if __name__ == "__main__":
     # Test code

@@ -8,15 +8,15 @@ global_normalize: False
 
 preload: false
 glob: "*.feather"
-alpha: 3.0
+alpha: 8.0
 
 # Dataloader
 batch_size: 64
-num_workers: 2
+num_workers: 1
 
 # Model
-hidden_size: 256
-num_layers: 2
+hidden_size: 128
+num_layers: 1
 dropout: 0.5
 output_size: null
 gnn_type: 'GAT' # 'GCN' or 'GAT'
@@ -27,11 +27,11 @@ weight_decay: 0.0
 epochs: 100
 
 # LR / early stopping
-lr_patience: 10
+lr_patience: 5
 lr_factor: 0.9
 min_lr: 1e-6
 max_lr_reductions: 10
-early_stop_patience: 15
+early_stop_patience: 8
 
 # Misc
 save_dir: NBE/GNN_GAT

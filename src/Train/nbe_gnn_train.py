@@ -205,82 +205,40 @@ def run_training(cfg: TrainConfig) -> None:
         )
         model.to(device)
 
-        optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            factor=cfg.lr_factor,
-            patience=cfg.lr_patience,
-            min_lr=cfg.min_lr,
-        )
-
-        criterion = nn.MSELoss()
-
         save_root = Path(cfg.save_dir) / f"{node_id}"
         save_root.mkdir(parents=True, exist_ok=True)
         run_dir = save_root
         writer = SummaryWriter(log_dir=str(run_dir / "tb"))
 
-        best_val = float("inf")
-        epochs_since_improve = 0
-        lr_reductions = 0
-        
-        best_ckpt = run_dir / "best.pth"
+        def run_phase(phase_name: str, load_ckpt: Optional[Path] = None, save_name: str = "best.pth"):
+            print(f"\n=== Starting {phase_name} phase ===")
+            
+            # Load checkpoint if provided (for fine-tuning)
+            if load_ckpt is not None and load_ckpt.exists():
+                print(f"Loading checkpoint from {load_ckpt}")
+                checkpoint = torch.load(load_ckpt)
+                model.load_state_dict(checkpoint["model_state"])
 
-        #for epoch in tqdm(range(1, cfg.epochs + 1)):
-        for epoch in range(1, cfg.epochs + 1):
-            model.train()
-            train_losses = []
-            for batch in train_loader:
-                xb, yb, edge_index = batch
-                # xb: (B, T, N, F)
-                # yb: (B, T, F_out)
-                # edge_index: (2, E)
-                
-                xb = xb.to(device)
-                yb = yb.to(device)
-                edge_index = edge_index.to(device)
-                
-                batch_size = xb.shape[0]
-                seq_len = xb.shape[1]
-                
-                # Prepare batched edge_index
-                batched_edge_index = create_batched_edge_index(edge_index, batch_size, num_nodes)
-                
-                # Reshape inputs for GNN: (T, B*N, F)
-                # We want to process all batches together for each timestep.
-                # xb: (B, T, N, F) -> (T, B, N, F) -> (T, B*N, F)
-                xb_reshaped = xb.permute(1, 0, 2, 3).reshape(seq_len, batch_size * num_nodes, -1)
-                
-                optimizer.zero_grad()
-                
-                # Forward pass
-                # model expects (seq_len, num_nodes_total, input_size)
-                outputs = model(xb_reshaped, batched_edge_index)
-                # outputs: (seq_len, B*N, output_size)
-                
-                # Reshape back to (B, T, N, output_size)
-                # (T, B*N, O) -> (T, B, N, O) -> (B, T, N, O)
-                outputs = outputs.view(seq_len, batch_size, num_nodes, -1).permute(1, 0, 2, 3)
-                
-                # Extract central node (index 0)
-                # (B, T, output_size)
-                outputs_central = outputs[:, :, 0, :]
-                
-                loss = criterion(outputs_central, yb)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-                optimizer.step()
-                train_losses.append(loss.item())
+            # Reset optimizer and scheduler for the new phase
+            optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                factor=cfg.lr_factor,
+                patience=cfg.lr_patience,
+                min_lr=cfg.min_lr,
+            )
+            criterion = nn.MSELoss()
 
-            train_loss = float(np.mean(train_losses)) if train_losses else 0.0
+            best_val = float("inf")
+            epochs_since_improve = 0
+            lr_reductions = 0
+            best_ckpt_path = run_dir / save_name
 
-            # validation
-            model.eval()
-            val_losses = []
-            with torch.no_grad():
-                for batch in val_loader:
+            for epoch in range(1, cfg.epochs + 1):
+                model.train()
+                train_losses = []
+                for batch in train_loader:
                     xb, yb, edge_index = batch
                     xb = xb.to(device)
                     yb = yb.to(device)
@@ -292,51 +250,92 @@ def run_training(cfg: TrainConfig) -> None:
                     batched_edge_index = create_batched_edge_index(edge_index, batch_size, num_nodes)
                     xb_reshaped = xb.permute(1, 0, 2, 3).reshape(seq_len, batch_size * num_nodes, -1)
                     
+                    optimizer.zero_grad()
+                    
+                    # Forward pass
                     outputs = model(xb_reshaped, batched_edge_index)
+                    
                     outputs = outputs.view(seq_len, batch_size, num_nodes, -1).permute(1, 0, 2, 3)
                     outputs_central = outputs[:, :, 0, :]
                     
-                    min_dim = min(outputs_central.shape[-1], yb.shape[-1])
-                    loss = criterion(outputs_central[..., :min_dim], yb[..., :min_dim])
-                    val_losses.append(loss.item())
+                    loss = criterion(outputs_central, yb)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                    optimizer.step()
+                    train_losses.append(loss.item())
 
-            val_loss = float(np.mean(val_losses)) if val_losses else 0.0
+                train_loss = float(np.mean(train_losses)) if train_losses else 0.0
 
-            writer.add_scalar("loss/train", train_loss, epoch)
-            writer.add_scalar("loss/val", val_loss, epoch)
-            writer.add_scalar("lr", optimizer.param_groups[0]["lr"], epoch)
+                # validation
+                model.eval()
+                val_losses = []
+                with torch.no_grad():
+                    for batch in val_loader:
+                        xb, yb, edge_index = batch
+                        xb = xb.to(device)
+                        yb = yb.to(device)
+                        edge_index = edge_index.to(device)
+                        
+                        batch_size = xb.shape[0]
+                        seq_len = xb.shape[1]
+                        
+                        batched_edge_index = create_batched_edge_index(edge_index, batch_size, num_nodes)
+                        xb_reshaped = xb.permute(1, 0, 2, 3).reshape(seq_len, batch_size * num_nodes, -1)
+                        
+                        outputs = model(xb_reshaped, batched_edge_index)
+                        outputs = outputs.view(seq_len, batch_size, num_nodes, -1).permute(1, 0, 2, 3)
+                        outputs_central = outputs[:, :, 0, :]
+                        
+                        min_dim = min(outputs_central.shape[-1], yb.shape[-1])
+                        loss = criterion(outputs_central[..., :min_dim], yb[..., :min_dim])
+                        val_losses.append(loss.item())
 
-            improved = val_loss + 1e-5 < best_val
-            if improved:
-                best_val = val_loss
-                epochs_since_improve = 0
-                # save best
-                torch.save({
-                    "model_state": model.state_dict(),
-                    "optimizer_state": optimizer.state_dict(),
-                    "epoch": epoch,
-                    "cfg": cfg.__dict__ if hasattr(cfg, "__dict__") else str(cfg),
-                }, best_ckpt)
-            else:
-                epochs_since_improve += 1
+                val_loss = float(np.mean(val_losses)) if val_losses else 0.0
 
-            if epochs_since_improve >= cfg.lr_patience:
-                prev_lr = optimizer.param_groups[0]["lr"]
-                scheduler.step(val_loss)
-                cur_lr = optimizer.param_groups[0]["lr"]
-                if cur_lr < prev_lr - 1e-12:
-                    lr_reductions += 1
+                writer.add_scalar(f"loss/{phase_name}/train", train_loss, epoch)
+                writer.add_scalar(f"loss/{phase_name}/val", val_loss, epoch)
+                writer.add_scalar(f"lr/{phase_name}", optimizer.param_groups[0]["lr"], epoch)
+
+                improved = val_loss + 1e-5 < best_val
+                if improved:
+                    best_val = val_loss
                     epochs_since_improve = 0
+                    torch.save({
+                        "model_state": model.state_dict(),
+                        "optimizer_state": optimizer.state_dict(),
+                        "epoch": epoch,
+                        "cfg": cfg.__dict__ if hasattr(cfg, "__dict__") else str(cfg),
+                    }, best_ckpt_path)
+                else:
+                    epochs_since_improve += 1
 
-            if lr_reductions >= cfg.max_lr_reductions and epochs_since_improve >= cfg.early_stop_patience:
-                print(f"Early stopping at epoch {epoch}: lr_reductions={lr_reductions}, epochs_since_improve={epochs_since_improve}")
-                break
+                if epochs_since_improve >= cfg.lr_patience:
+                    prev_lr = optimizer.param_groups[0]["lr"]
+                    scheduler.step(val_loss)
+                    cur_lr = optimizer.param_groups[0]["lr"]
+                    if cur_lr < prev_lr - 1e-12:
+                        lr_reductions += 1
+                        epochs_since_improve = 0
 
-            print(f"node={node_id} Epoch {epoch}/{cfg.epochs}  train={train_loss:.6f}  val={val_loss:.6f}  lr={optimizer.param_groups[0]['lr']:.6e}")
+                if lr_reductions >= cfg.max_lr_reductions and epochs_since_improve >= cfg.early_stop_patience:
+                    print(f"Early stopping at epoch {epoch}: lr_reductions={lr_reductions}, epochs_since_improve={epochs_since_improve}")
+                    break
+
+                print(f"[{phase_name}] node={node_id} Epoch {epoch}/{cfg.epochs}  train={train_loss:.6f}  val={val_loss:.6f}  lr={optimizer.param_groups[0]['lr']:.6e}")
+            
+            tqdm.write(f"{phase_name} finished for node {node_id}. Best val: {best_val:.6f}. Checkpoint saved to {best_ckpt_path}")
+            return best_ckpt_path
+
+        # 1. Pre-training Phase
+        model.set_finetune(False)
+        best_pretrain_ckpt = run_phase("pretrain", load_ckpt=None, save_name="best_pretrain.pth")
+
+        # 2. Fine-tuning Phase
+        model.set_finetune(True)
+        run_phase("finetune", load_ckpt=best_pretrain_ckpt, save_name="best_finetune.pth")
 
         writer.flush()
         writer.close()
-        tqdm.write(f"Training finished for node {node_id}. Best val: {best_val:.6f}. Checkpoint saved to {best_ckpt}")
 
 
 @hydra.main(version_base=None, config_path="../../config/NBE", config_name="peephole_lstm")

@@ -166,8 +166,13 @@ def animate(frames: List[np.ndarray], colors: List[np.ndarray], times: List, tet
 			geom.colors = o3d.utility.Vector3dVector(clr)
 			vis.update_geometry(geom)
 
-		time.sleep(delay)
+		#time.sleep(delay)
 		idx = (idx + 1) % len(frames)
+		if idx == 0:
+			time.sleep(1.0)  # pause at end
+		else:
+			time.sleep(delay)
+		
 		return True
 
 	vis.register_animation_callback(cb)
@@ -178,7 +183,7 @@ def animate(frames: List[np.ndarray], colors: List[np.ndarray], times: List, tet
 def main():
 	parser = argparse.ArgumentParser(description="Deformation animation from CSV with error coloring")
 	parser.add_argument("input_csv", type=str, help="CSV file containing time,node_id,x,y,z and error columns")
-	parser.add_argument("--tet_file", type=str, default="", help="optional tetra elements file for mesh topology")
+	parser.add_argument("--tet_file", type=str, default="/workspace/dataset/liver_model_info/tetra_connectivity.csv", help="optional tetra elements file for mesh topology")
 	parser.add_argument("--cmap", type=str, default="viridis", help="matplotlib colormap name")
 	parser.add_argument("--fps", type=float, default=8.0, help="frames per second")
 	parser.add_argument("--error_cols", type=str, default="", help="comma separated error columns to combine (default: x_error,y_error,z_error)")

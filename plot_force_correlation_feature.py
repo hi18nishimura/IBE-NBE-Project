@@ -1,12 +1,3 @@
-#指定したディレクトリにあるfeatherファイルを全て読み込み、特徴量間の相関関係をプロットする関数
-# 変位（dx,dy,dz)と応力（Sxx,Syy,Szz,Sxy,Syz,Szx）の相関関係をプロットする
-# 変位と応力に関係があれば、特徴量としてネットワークに含める根拠になる
-# コマンドライン引数でデータセットのディレクトリとプロット結果を保存するディレクトリを指定する
-# 例: python3 plot_correlation_feature.py --input_dir /workspace/dataset/bin/toy_all_model/train --output_dir /workspace/plots/correlation_features
-# プロットしたいグラフ
-# 各変位と応力の散布図("f_x","f_y","f_z"列からユークリッド距離を計算して、その値を使って色を付ける)
-# 全結合したデータフレームはfeather形式で保存する。--input_dirで指定された値がfeatherファイルであれば、そのまま読み込む
-
 import os
 import argparse
 import pandas as pd
@@ -37,7 +28,7 @@ def oka_normalize_series(series: pd.Series, pwidth: float, alpha: float = 1.2) -
     return pd.Series(normed, index=series.index)
 
 def main():
-    parser = argparse.ArgumentParser(description='Plot correlation between displacement and stress.')
+    parser = argparse.ArgumentParser(description='Plot correlation between force and displacement/stress.')
     parser.add_argument('--input_dir', type=str, required=True, help='Input directory containing feather files or path to a feather file.')
     parser.add_argument('--output_dir', type=str, required=True, help='Directory to save the plots.')
     parser.add_argument('--sample_size', type=int, default=100000, help='Number of samples to plot to speed up rendering. Set to 0 to plot all data.')
@@ -71,7 +62,38 @@ def main():
         dfs = []
         for f in tqdm(feather_files, desc="Reading files"):
             try:
-                dfs.append(pd.read_feather(f))
+                sub_df = pd.read_feather(f)
+                
+                # Extract displacement of the force node
+                if 'force_node_id' in sub_df.columns and 'node_id' in sub_df.columns and 'time' in sub_df.columns:
+                    # Find rows corresponding to the force node
+                    # Assuming force_node_id indicates the node where force is applied
+                    force_node_rows = sub_df[sub_df['node_id'] == sub_df['force_node_id']]
+                    
+                    if not force_node_rows.empty:
+                        # Extract time, displacement and position columns
+                        cols_to_extract = ['time', 'dx', 'dy', 'dz']
+                        if all(c in sub_df.columns for c in ['x', 'y', 'z']):
+                            cols_to_extract.extend(['x', 'y', 'z'])
+
+                        force_data = force_node_rows[cols_to_extract].copy()
+                        rename_dict = {
+                            'dx': 'force_node_dx',
+                            'dy': 'force_node_dy',
+                            'dz': 'force_node_dz',
+                            'x': 'force_node_x',
+                            'y': 'force_node_y',
+                            'z': 'force_node_z'
+                        }
+                        force_data = force_data.rename(columns=rename_dict)
+                        
+                        # Remove duplicates if multiple rows exist for same time (should not happen in standard format)
+                        force_data = force_data.drop_duplicates(subset=['time'])
+                        
+                        # Merge back to the dataframe based on time
+                        sub_df = pd.merge(sub_df, force_data, on='time', how='left')
+                
+                dfs.append(sub_df)
             except Exception as e:
                 print(f"Error reading {f}: {e}")
         
@@ -104,33 +126,49 @@ def main():
         else:
             print("Warning: 'node_id' column not found in the dataset. Ignoring --node_id argument.")
 
+    # Calculate distance to force node if node_id is specified and coordinates are available
+    if target_node_id is not None and all(col in df.columns for col in ['x', 'y', 'z', 'force_node_x', 'force_node_y', 'force_node_z']):
+        print("Calculating distance to force node...")
+        df['distance_to_force_node'] = np.sqrt(
+            (df['x'] - df['force_node_x'])**2 +
+            (df['y'] - df['force_node_y'])**2 +
+            (df['z'] - df['force_node_z'])**2
+        )
+
     # Sampling to speed up plotting
     if sample_size > 0 and len(df) > sample_size:
         print(f"Sampling {sample_size} points from {len(df)} total points to speed up plotting...")
         df = df.sample(n=sample_size, random_state=42)
 
-    # Calculate force magnitude for coloring
-    if all(col in df.columns for col in ['f_x', 'f_y', 'f_z']):
-        df['force_magnitude'] = np.sqrt(df['f_x']**2 + df['f_y']**2 + df['f_z']**2)
-    else:
-        print("Warning: f_x, f_y, f_z columns not found. Coloring by force magnitude will be skipped.")
-        df['force_magnitude'] = 0 
-
+    force_cols = ['force_node_dx', 'force_node_dy', 'force_node_dz']
     displacement_cols = ['dx', 'dy', 'dz']
     stress_cols = ['Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx']
 
     # Check if columns exist
+    available_force = [col for col in force_cols if col in df.columns]
     available_disp = [col for col in displacement_cols if col in df.columns]
     available_stress = [col for col in stress_cols if col in df.columns]
 
-    if not available_disp or not available_stress:
-        print("Missing displacement or stress columns.")
+    if not available_force:
+        print("Missing force node displacement columns (force_node_dx, force_node_dy, force_node_dz).")
+        print("Make sure 'force_node_id', 'node_id', and 'time' columns exist in the input data.")
         return
+
+    if not available_disp and not available_stress:
+        print("Missing displacement and stress columns.")
+        return
+
+    target_cols = available_disp + available_stress
+
+    # Apply absolute value to all features
+    print("Applying absolute value to all features...")
+    features_to_abs = available_force + target_cols
+    df[features_to_abs] = df[features_to_abs].abs()
 
     # Apply Oka normalization if requested
     if use_oka_normalize:
         print("Applying Oka normalization...")
-        features_to_normalize = available_disp + available_stress
+        features_to_normalize = available_force + target_cols
         for col in features_to_normalize:
             # pwidth is the max absolute value of the column
             pwidth = df[col].abs().max()
@@ -145,7 +183,7 @@ def main():
     # Apply Yeo-Johnson normalization if requested
     if use_yeo_johnson:
         print("Applying Yeo-Johnson normalization...")
-        features_to_normalize = available_disp + available_stress
+        features_to_normalize = available_force + target_cols
         pt = PowerTransformer(method='yeo-johnson', standardize=True)
         df[features_to_normalize] = pt.fit_transform(df[features_to_normalize])
         
@@ -155,7 +193,7 @@ def main():
 
     # PCA Analysis
     print("Performing PCA analysis...")
-    features = available_disp + available_stress
+    features = available_force + target_cols
     
     # Standardize the data before PCA
     df_pca = df[features].copy()
@@ -197,28 +235,32 @@ def main():
     print("Plotting correlations...")
     
     # Plot scatter plots
-    plot_tasks = [(d, s) for d in available_disp for s in available_stress]
+    plot_tasks = [(f, t) for f in available_force for t in target_cols]
     
-    for disp, stress in tqdm(plot_tasks, desc="Generating plots"):
+    for force, target in tqdm(plot_tasks, desc="Generating plots"):
         plt.figure(figsize=(10, 8))
         
-        # Scatter plot with color mapping
-        if 'force_magnitude' in df.columns and df['force_magnitude'].nunique() > 1:
-            scatter = plt.scatter(df[disp], df[stress], c=df['force_magnitude'], cmap='viridis', alpha=0.5, s=10, rasterized=True)
+        # Color by distance if available and node_id is specified
+        if target_node_id is not None and 'distance_to_force_node' in df.columns:
+            scatter = plt.scatter(df[force], df[target], c=df['distance_to_force_node'], cmap='viridis', alpha=0.5, s=10, rasterized=True)
+            cbar = plt.colorbar(scatter)
+            cbar.set_label('Distance to Force Node')
+        # Fallback to force magnitude
+        elif 'force_magnitude' in df.columns and df['force_magnitude'].nunique() > 1:
+            scatter = plt.scatter(df[force], df[target], c=df['force_magnitude'], cmap='viridis', alpha=0.5, s=10, rasterized=True)
             cbar = plt.colorbar(scatter)
             cbar.set_label('Force Magnitude')
         else:
-            plt.scatter(df[disp], df[stress], alpha=0.5, s=10, rasterized=True)
+            plt.scatter(df[force], df[target], alpha=0.5, s=10, rasterized=True)
         
-        plt.xlabel(f'Displacement {disp}')
-        plt.ylabel(f'Stress {stress}')
-        plt.title(f'Correlation: {disp} vs {stress}')
+        plt.xlabel(f'Force Node Displacement {force}')
+        plt.ylabel(f'{target}')
+        plt.title(f'Correlation: {force} vs {target}')
         plt.grid(True)
         
-        save_path = os.path.join(output_dir, f'correlation_{disp}_{stress}.png')
+        save_path = os.path.join(output_dir, f'correlation_{force}_{target}.png')
         plt.savefig(save_path)
         plt.close()
-        # print(f"Saved plot to {save_path}")
 
 if __name__ == "__main__":
     main()
