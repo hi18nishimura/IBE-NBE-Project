@@ -54,33 +54,32 @@ class NbeGNN(nn.Module):
             self.convs.append(ConvLayer(input_size, output_size))
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Node features of shape (num_nodes, input_size)
-               OR (seq_len, num_nodes, input_size)
-            edge_index: Graph connectivity of shape (2, num_edges)
-        
-        Returns:
-            out: Node features of shape (num_nodes, output_size)
-                 OR (seq_len, num_nodes, output_size)
-        """
         if x.dim() == 3:
-            # Case: (seq_len, num_nodes, input_size)
-            seq_len, num_nodes, _ = x.size()
-            outputs = []
-            for t in range(seq_len):
-                # Process each time step
-                if self.finetune and t != 0:
-                    # x[t] をコピーして新しいテンソルを作成
-                    current_input = x[t].clone()
-                    # 予測値で上書き
-                    current_input[:, :self.output_size] = out_t
-                    # 推論
-                    out_t = self._forward_single(current_input, edge_index)
-                else:
-                    out_t = self._forward_single(x[t], edge_index)
-                outputs.append(out_t)
-            return torch.stack(outputs, dim=0)
+            seq_len, num_nodes, input_size = x.size()
+            
+            if self.finetune:
+                # 再帰的な依存があるため、ループ処理が必要
+                outputs = []
+                out_t = None
+                for t in range(seq_len):
+                    if t != 0:
+                        current_input = x[t].clone()
+                        current_input[:, :self.output_size] = out_t.detach() # out_tをdetachして勾配計算のグラフを分離を推奨
+                        out_t = self._forward_single(current_input, edge_index)
+                    else:
+                        out_t = self._forward_single(x[t], edge_index)
+                    outputs.append(out_t)
+                return torch.stack(outputs, dim=0)
+            else:
+                # Case: (seq_len, num_nodes, input_size) -> (seq_len * num_nodes, input_size)
+                x_reshaped = x.view(-1, input_size) 
+                
+                # GNN計算
+                out_reshaped = self._forward_single(x_reshaped, edge_index)
+                
+                # (seq_len * num_nodes, output_size) -> (seq_len, num_nodes, output_size)
+                output_size = out_reshaped.size(-1)
+                return out_reshaped.view(seq_len, num_nodes, output_size)
         else:
             # Case: (num_nodes, input_size)
             return self._forward_single(x, edge_index)

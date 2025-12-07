@@ -216,7 +216,7 @@ def run_training(cfg: TrainConfig) -> None:
             # Load checkpoint if provided (for fine-tuning)
             if load_ckpt is not None and load_ckpt.exists():
                 print(f"Loading checkpoint from {load_ckpt}")
-                checkpoint = torch.load(load_ckpt)
+                checkpoint = torch.load(load_ckpt, weights_only=False)
                 model.load_state_dict(checkpoint["model_state"])
 
             # Reset optimizer and scheduler for the new phase
@@ -338,7 +338,7 @@ def run_training(cfg: TrainConfig) -> None:
         writer.close()
 
 
-@hydra.main(version_base=None, config_path="../../config/NBE", config_name="peephole_lstm")
+@hydra.main(version_base=None, config_path="../../config/NBE", config_name="gnn")
 def main(cfg: TrainConfig) -> None:
     # Note: We are reusing the peephole_lstm config structure for convenience, 
     # but ideally we should have a separate config for GNN.

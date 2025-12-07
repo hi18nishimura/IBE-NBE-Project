@@ -61,7 +61,7 @@ def all_node_nbe_params(node_datasets: dict[int, NbeGNNDataset], hidden_size: in
     return node_params, all_neighbor_node
 
 # NBEの重みを取得する
-def all_nbe_weights_load(node_params: dict[int, dict[str, int]], weight_dir: str, map_location: torch.device | str) -> dict[int, NbeGNN]:
+def all_nbe_weights_load(node_params: dict[int, dict[str, int]], weight_dir: str, map_location: torch.device | str, model_name: str = "best.pth") -> dict[int, NbeGNN]:
     nbe_models = {}
     for node_id, params in tqdm(node_params.items(), desc="Weights Load"):
         model, ckpt, path = load_model_from_dir(
@@ -76,6 +76,7 @@ def all_nbe_weights_load(node_params: dict[int, dict[str, int]], weight_dir: str
                 "gnn_type": params["gnn_type"],
             },
             map_location=map_location,
+            model_name=model_name,
         )
         if model is None:
              print(f"Warning: No model found for node {node_id} in {weight_dir}/{node_id}")
@@ -291,9 +292,10 @@ if __name__ == "__main__":
     parser.add_argument("--gnn_type", type=str, default='GAT')
     parser.add_argument("--device", default=None, help="torch device string, e.g. cpu or cuda:0")
     parser.add_argument("--global_normalize", action="store_true", help="Whether to apply global normalization to the dataset")
-    parser.add_argument("--alpha", type=float, default=3.0, help="Oka normalization alpha parameter")
     parser.add_argument("--output_dir", default="/workspace/results", help="Directory to save evaluation results")
+    parser.add_argument("--alpha", type=float, default=8.0, help="Oka normalization alpha parameter")
     parser.add_argument("--files_num", type=int, default=None, help="Number of files to process from index 0")
+    parser.add_argument("--model_name", type=str, default="best_pretrain.pth", help="Name of the model file to load (default: best_pretrain.pth)")
     args = parser.parse_args()
 
     device = torch.device(args.device) if args.device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -325,7 +327,7 @@ if __name__ == "__main__":
     print(all_nbe_dataset[1].files[args.target_idx])
     # NBEモデルの取得
     print("NBEモデルの取得")
-    all_nbe = all_nbe_weights_load(all_nbe_params, args.weight_dir, map_location=device)
+    all_nbe = all_nbe_weights_load(all_nbe_params, args.weight_dir, map_location=device, model_name=args.model_name)
 
     # Determine indices to process
     if args.files_num is not None:

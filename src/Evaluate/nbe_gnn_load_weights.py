@@ -6,8 +6,8 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 
 
-def find_best_checkpoint(root: Path) -> Optional[Path]:
-	"""Recursively search for a file named 'best.pth' under `root`.
+def find_best_checkpoint(root: Path, model_name: str = "best.pth") -> Optional[Path]:
+	"""Recursively search for a file named `model_name` under `root`.
 
 	Returns the first match as a Path, or None if not found.
 	"""
@@ -15,7 +15,7 @@ def find_best_checkpoint(root: Path) -> Optional[Path]:
 	if not root.exists():
 		return None
 	# use rglob to search recursively
-	for p in root.rglob("best.pth"):
+	for p in root.rglob(model_name):
 		if p.is_file():
 			return p
 	return None
@@ -25,15 +25,16 @@ def load_best_checkpoint(
 	root: str | Path,
 	map_location: Optional[torch.device | str] = None,
 	weights_only: bool = True,
+	model_name: str = "best.pth",
 ) -> Tuple[Optional[Dict[str, Any]], Optional[Path]]:
-	"""Load checkpoint dict from the first 'best.pth' under `root`.
+	"""Load checkpoint dict from the first `model_name` under `root`.
 
 	This function attempts a weights-only load by default (safe, tensors only).
 	If that fails and `weights_only` is True we will retry a full load with
 	a permissive safe-globals context for common non-tensor objects (e.g. OmegaConf)
 	when available. Returns (checkpoint_dict or None, path_to_ckpt or None).
 	"""
-	ckpt_path = find_best_checkpoint(Path(root))
+	ckpt_path = find_best_checkpoint(Path(root), model_name=model_name)
 	if ckpt_path is None:
 		return None, None
 	if map_location is None:
@@ -125,18 +126,18 @@ def build_model_from_ckpt(
 	model.eval()
 	return model, ckpt
 
-
 def load_model_from_dir(
 	root: str | Path,
 	model_ctor,
 	model_ctor_kwargs: Optional[Dict[str, Any]] = None,
 	map_location: Optional[torch.device | str] = None,
+	model_name: str = "best.pth",
 ) -> Tuple[Optional[torch.nn.Module], Optional[Dict[str, Any]], Optional[Path]]:
-	"""Convenience: search for best.pth, load checkpoint, build model and load weights.
+	"""Convenience: search for `model_name`, load checkpoint, build model and load weights.
 
 	Returns (model or None, ckpt dict or None, ckpt_path or None).
 	"""
-	ckpt, path = load_best_checkpoint(root, map_location=map_location, weights_only=False)
+	ckpt, path = load_best_checkpoint(root, map_location=map_location, weights_only=False, model_name=model_name)
 	if ckpt is None:
 		return None, None, None
 	model, ckpt_loaded = build_model_from_ckpt(ckpt, model_ctor, model_ctor_kwargs, map_location=map_location)
