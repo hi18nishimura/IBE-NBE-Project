@@ -24,7 +24,7 @@ gnn_type: 'GAT' # 'GCN' or 'GAT'
 # Optimization
 lr: 0.001
 weight_decay: 0.0
-epochs: 100
+epochs: 5
 
 # LR / early stopping
 lr_patience: 10

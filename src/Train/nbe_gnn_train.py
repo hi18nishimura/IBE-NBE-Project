@@ -201,7 +201,8 @@ def run_training(cfg: TrainConfig) -> None:
             output_size=output_size, 
             num_layers=cfg.num_layers, 
             dropout=cfg.dropout,
-            gnn_type=cfg.gnn_type
+            gnn_type=cfg.gnn_type,
+            return_only_central=True
         )
         model.to(device)
 
@@ -248,15 +249,12 @@ def run_training(cfg: TrainConfig) -> None:
                     seq_len = xb.shape[1]
                     
                     batched_edge_index = create_batched_edge_index(edge_index, batch_size, num_nodes)
-                    xb_reshaped = xb.permute(1, 0, 2, 3).reshape(seq_len, batch_size * num_nodes, -1)
                     
                     optimizer.zero_grad()
                     
                     # Forward pass
-                    outputs = model(xb_reshaped, batched_edge_index)
-                    
-                    outputs = outputs.view(seq_len, batch_size, num_nodes, -1).permute(1, 0, 2, 3)
-                    outputs_central = outputs[:, :, 0, :]
+                    # Pass (Batch, Seq, Nodes, Feats) directly to model
+                    outputs_central = model(xb, batched_edge_index)
                     
                     loss = criterion(outputs_central, yb)
                     loss.backward()
@@ -280,11 +278,8 @@ def run_training(cfg: TrainConfig) -> None:
                         seq_len = xb.shape[1]
                         
                         batched_edge_index = create_batched_edge_index(edge_index, batch_size, num_nodes)
-                        xb_reshaped = xb.permute(1, 0, 2, 3).reshape(seq_len, batch_size * num_nodes, -1)
                         
-                        outputs = model(xb_reshaped, batched_edge_index)
-                        outputs = outputs.view(seq_len, batch_size, num_nodes, -1).permute(1, 0, 2, 3)
-                        outputs_central = outputs[:, :, 0, :]
+                        outputs_central = model(xb, batched_edge_index)
                         
                         min_dim = min(outputs_central.shape[-1], yb.shape[-1])
                         loss = criterion(outputs_central[..., :min_dim], yb[..., :min_dim])

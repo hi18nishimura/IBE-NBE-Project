@@ -124,7 +124,7 @@ def plot_error_distribution(csv_path, output_dir):
     print(f"All plots saved to {output_dir}")
 
 if __name__ == "__main__":
-    csv_file = 'nbe_peephole_lstm_evaluation_results.csv'
+    csv_file = '/workspace/results/gnn_global_finetune/liver_out_node100_dx-15.1_dy-26.8_dz22.9_nodal_average_features_results.csv'
     output_directory = 'plots/error_distribution'
     
     # Check if file exists in current directory, if not try workspace root

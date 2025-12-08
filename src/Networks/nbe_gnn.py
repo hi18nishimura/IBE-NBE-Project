@@ -18,7 +18,8 @@ class NbeGNN(nn.Module):
         num_layers: int = 2, 
         dropout: float = 0.5,
         gnn_type: str = 'GCN',
-        finetune: bool = False
+        finetune: bool = False,
+        return_only_central: bool = False
     ) -> None:
         super().__init__()
         self.input_size = input_size
@@ -28,6 +29,7 @@ class NbeGNN(nn.Module):
         self.dropout = dropout
         self.gnn_type = gnn_type
         self.finetune = finetune
+        self.return_only_central = return_only_central
 
         self.convs = nn.ModuleList()
         
@@ -47,51 +49,114 @@ class NbeGNN(nn.Module):
             for _ in range(num_layers - 2):
                 self.convs.append(ConvLayer(hidden_size, hidden_size))
                 
-            # Output layer
-            self.convs.append(ConvLayer(hidden_size, output_size))
+            # Last GNN layer (outputs hidden_size)
+            self.convs.append(ConvLayer(hidden_size, hidden_size))
         else:
-            # Single layer
-            self.convs.append(ConvLayer(input_size, output_size))
+            # Single layer (outputs hidden_size)
+            self.convs.append(ConvLayer(input_size, hidden_size))
+            
+        # Readout layer (Linear)
+        self.readout = nn.Linear(hidden_size, output_size)
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        if x.dim() == 3:
-            seq_len, num_nodes, input_size = x.size()
+        # Case 1: (Batch, Seq, Nodes, Input) -> 4 dims
+        if x.dim() == 4:
+            B, S, N, F = x.size()
+            # Reshape to (Seq, Batch*Nodes, Input) for sequential processing
+            # Note: edge_index must be batched accordingly (Batch*Nodes)
+            x_reshaped = x.permute(1, 0, 2, 3).reshape(S, B*N, F)
             
-            if self.finetune:
-                # 再帰的な依存があるため、ループ処理が必要
-                outputs = []
-                out_t = None
-                for t in range(seq_len):
-                    if t != 0:
-                        current_input = x[t].clone()
-                        current_input[:, :self.output_size] = out_t.detach() # out_tをdetachして勾配計算のグラフを分離を推奨
-                        out_t = self._forward_single(current_input, edge_index)
-                    else:
-                        out_t = self._forward_single(x[t], edge_index)
-                    outputs.append(out_t)
-                return torch.stack(outputs, dim=0)
+            out = self._forward_seq(x_reshaped, edge_index, num_nodes=N) # (S, B, Out) if central else (S, B*N, Out)
+            
+            if self.return_only_central:
+                # out: (S, B, Out) -> (B, S, Out)
+                return out.permute(1, 0, 2)
             else:
-                # Case: (seq_len, num_nodes, input_size) -> (seq_len * num_nodes, input_size)
-                x_reshaped = x.view(-1, input_size) 
-                
-                # GNN計算
-                out_reshaped = self._forward_single(x_reshaped, edge_index)
-                
+                # out: (S, B*N, Out) -> (S, B, N, Out) -> (B, S, N, Out)
+                return out.view(S, B, N, -1).permute(1, 0, 2, 3)
+
+        # Case 2: (Seq, Nodes, Input) -> 3 dims
+        elif x.dim() == 3:
+            S, N, F = x.size()
+            out = self._forward_seq(x, edge_index, num_nodes=N) # (S, 1, Out) if central else (S, N, Out)
+            
+            if self.return_only_central:
+                # out: (S, 1, Out) -> (S, Out)
+                return out.squeeze(1)
+            return out
+
+        # Case 3: (Nodes, Input) -> 2 dims
+        else:
+            N, F = x.size()
+            out = self._forward_single(x, edge_index, num_nodes=N)
+            # out: (1, Out) if central else (N, Out)
+            if self.return_only_central:
+                return out.squeeze(0)
+            return out
+
+    def _forward_seq(self, x: torch.Tensor, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
+        """
+        Process a sequence of graph states.
+        x: (Seq, TotalNodes, Input)
+        """
+        seq_len, total_nodes, input_size = x.size()
+        batch_size = total_nodes // num_nodes
+        
+        if self.finetune:
+            # 再帰的な依存があるため、ループ処理が必要
+            outputs = []
+            out_t = None
+            for t in range(seq_len):
+                if t != 0:
+                    current_input = x[t].clone()
+                    
+                    if self.return_only_central:
+                        # out_t: (Batch, Output)
+                        # current_input: (TotalNodes, Input) -> (Batch, NumNodes, Input)
+                        # Update only central nodes (index 0)
+                        current_input_view = current_input.view(batch_size, num_nodes, -1)
+                        current_input_view[:, 0, :self.output_size] = out_t.detach()
+                    else:
+                        current_input[:, :self.output_size] = out_t.detach() # out_tをdetachして勾配計算のグラフを分離を推奨
+                        
+                    out_t = self._forward_single(current_input, edge_index, num_nodes)
+                else:
+                    out_t = self._forward_single(x[t], edge_index, num_nodes)
+                outputs.append(out_t)
+            return torch.stack(outputs, dim=0)
+        else:
+            # Case: (seq_len, num_nodes, input_size) -> (seq_len * num_nodes, input_size)
+            x_reshaped = x.view(-1, input_size) 
+            
+            # GNN計算
+            out_reshaped = self._forward_single(x_reshaped, edge_index, num_nodes)
+            
+            if self.return_only_central:
+                # out_reshaped: (Seq * Batch, Output)
+                # -> (Seq, Batch, Output)
+                return out_reshaped.view(seq_len, batch_size, -1)
+            else:
                 # (seq_len * num_nodes, output_size) -> (seq_len, num_nodes, output_size)
                 output_size = out_reshaped.size(-1)
-                return out_reshaped.view(seq_len, num_nodes, output_size)
-        else:
-            # Case: (num_nodes, input_size)
-            return self._forward_single(x, edge_index)
+                return out_reshaped.view(seq_len, total_nodes, output_size)
 
-    def _forward_single(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        for i, conv in enumerate(self.convs[:-1]):
+    def _forward_single(self, x: torch.Tensor, edge_index: torch.Tensor, num_nodes: Optional[int] = None) -> torch.Tensor:
+        for i, conv in enumerate(self.convs):
             x = conv(x, edge_index)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         
-        # Last layer
-        x = self.convs[-1](x, edge_index)
+        # x: (TotalNodes, Hidden)
+        
+        if self.return_only_central and num_nodes is not None:
+            total_nodes = x.size(0)
+            batch_size = total_nodes // num_nodes
+            # Extract central nodes: (Batch, NumNodes, Hidden) -> (Batch, Hidden)
+            # Central node is at index 0 for each graph in the batch
+            x = x.view(batch_size, num_nodes, -1)[:, 0, :]
+        
+        # Readout layer
+        x = self.readout(x)
         
         # Apply sigmoid and scale to [0.1, 0.9]
         x = torch.sigmoid(x) * 0.8 + 0.1

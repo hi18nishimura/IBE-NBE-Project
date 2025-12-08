@@ -168,7 +168,7 @@ def animate(frames: List[np.ndarray], colors: List[np.ndarray], times: List, tet
 
 		#time.sleep(delay)
 		idx = (idx + 1) % len(frames)
-		if idx == 0:
+		if idx == 1:
 			time.sleep(1.0)  # pause at end
 		else:
 			time.sleep(delay)
