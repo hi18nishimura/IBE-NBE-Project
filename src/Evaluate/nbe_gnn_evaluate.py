@@ -23,24 +23,26 @@ def oka_normalize_tensor(x, max_values, alpha=3.0):
     # formula: sign(x) * 0.4 * (|x|/max_vals)^(1/alpha) + 0.5
     # Note: max_values should be broadcastable to x
     
-    normalized = signs * 0.4 * torch.pow(absvals / (max_values + eps), 1.0/alpha) + 0.5
+    normalized = signs * 0.4 * torch.pow(absvals / (max_values), 1.0/alpha) + 0.5
     return normalized
 
 # NbeGNNDatasetの初期化
-def all_node_nbe_dataset_init(data_dir, max_node, global_normalize: bool, alpha: float) -> dict[int, NbeGNNDataset]:
+def all_node_nbe_dataset_init(data_dir, max_node, global_normalize: bool, alpha: float, force_flag: bool) -> dict[int, NbeGNNDataset]:
     node_datasets = {}
     for node_id in tqdm(range(1, max_node+1), desc="Dataset Init"):
-        node_datasets[node_id] = NbeGNNDataset(data_dir=data_dir, node_id=node_id, global_normalize=global_normalize, alpha=alpha)
+        node_datasets[node_id] = NbeGNNDataset(data_dir=data_dir, node_id=node_id, global_normalize=global_normalize, alpha=alpha, force_flag=force_flag)
     return node_datasets
 
 # Nbeパラメータの取得
-def all_node_nbe_params(node_datasets: dict[int, NbeGNNDataset], hidden_size: int, num_layers: int, drop_out: float, gnn_type: str) -> dict[int, dict[str, int]]:
+def all_node_nbe_params(node_datasets: dict[int, NbeGNNDataset], hidden_size: int, num_layers: int, drop_out: float, gnn_type: str, force_flag: bool, multi_fully_layer: int) -> dict[int, dict[str, int]]:
     node_params = {}
     all_neighbor_node = {}
     for node_id, dataset in tqdm(node_datasets.items(), desc="Params Init"):
         # Get input size from a sample
         sample_item = dataset[0]
         input_size = sample_item["inputs"].shape[-1]
+        if force_flag:
+            input_size += 3
         
         # Create max_values tensor ordered by columns
         max_vals_list = [dataset.max_map.get(col, 1.0) for col in dataset.columns]
@@ -55,7 +57,8 @@ def all_node_nbe_params(node_datasets: dict[int, NbeGNNDataset], hidden_size: in
             "gnn_type": gnn_type,
             "max_values": dataset.max_map,
             "max_values_tensor": max_vals_tensor,
-            "alpha": dataset.alpha
+            "alpha": dataset.alpha,
+            "multi_fully_layer": multi_fully_layer
         }
         all_neighbor_node[node_id] = dataset.node_order
     return node_params, all_neighbor_node
@@ -74,31 +77,39 @@ def all_nbe_weights_load(node_params: dict[int, dict[str, int]], weight_dir: str
                 "num_layers": params["num_layers"],
                 "dropout": params["drop_out"],
                 "gnn_type": params["gnn_type"],
+                "multi_fully_layer": params["multi_fully_layer"],
             },
             map_location=map_location,
             model_name=model_name,
         )
         if model is None:
              print(f"Warning: No model found for node {node_id} in {weight_dir}/{node_id}")
+        else:
+            model.eval()
         nbe_models[node_id] = model
     return nbe_models
 
 # 時刻1のデータを取得する
-def get_nbe_gnn_dataset_time1_data(nbe_dataset_dict, max_node, idx):
+def get_nbe_gnn_dataset_time1_data(nbe_dataset_dict, max_node, idx, force_flag):
     node_time1_data = {}
     node_edge_index = {}
     all_targets = {}
+    all_force_tensors = {}
     for node_id in range(1, max_node+1):
         data = nbe_dataset_dict[node_id].__getitem__(idx)
-        inputs, targets, edge_index = data["inputs"], data["targets"], data["edge_index"]
+        if force_flag:
+            inputs, targets, edge_index, force_tensor = data["inputs"], data["targets"], data["edge_index"], data["force_tensor"]
+            all_force_tensors[node_id] = force_tensor
+        else:
+            inputs, targets, edge_index = data["inputs"], data["targets"], data["edge_index"]
         
-        # inputs: (19, N, F) -> time1: (N, F)
-        time1_data = inputs[0, :]
+        # inputs: (19, N, F) -> time1: (1, 1, N, F)
+        time1_data = inputs[0, :].unsqueeze(0).unsqueeze(0)
         
         node_time1_data[node_id] = time1_data
         node_edge_index[node_id] = edge_index
         all_targets[node_id] = targets
-    return node_time1_data, node_edge_index, all_targets
+    return node_time1_data, node_edge_index, all_targets, all_force_tensors
 
 # GNNの出力を次の入力に変換する (物理量を経由して再正規化)
 def convert_physical_output_to_input_gnn(physical_outputs_dict, neighborhood_dict, node_params, device):
@@ -126,13 +137,20 @@ def convert_physical_output_to_input_gnn(physical_outputs_dict, neighborhood_dic
                 pass
         
         if input_list:
-            inputs_dict[target_node] = torch.stack(input_list, dim=0)
+            # Stack neighbors: (N_neighbors, F)
+            stacked_inputs = torch.stack(input_list, dim=0)
+            # print(input_list)
+            # print(stacked_inputs)
+            # print(neighbors)
+            # exit()
+            # Add Batch and Time dimensions: (1, 1, N_neighbors, F)
+            inputs_dict[target_node] = stacked_inputs.unsqueeze(0).unsqueeze(0)
         else:
              inputs_dict[target_node] = torch.empty(0)
 
     return inputs_dict
 
-def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neighbor_node, all_nbe, device, output_dir):
+def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neighbor_node, all_nbe, device, output_dir, force_flag):
     target_file_path = all_nbe_dataset[1].files[target_idx]
     target_file_stem = target_file_path.stem
     correct_df = pd.read_feather(target_file_path)
@@ -146,13 +164,17 @@ def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neigh
     max_node = max(all_nbe_dataset.keys())
 
     # 時刻1の情報を取得する
-    all_next_inputs, all_edge_indices, all_targets = get_nbe_gnn_dataset_time1_data(all_nbe_dataset, max_node, target_idx)
+    all_next_inputs, all_edge_indices, all_targets, all_force_tensors = get_nbe_gnn_dataset_time1_data(all_nbe_dataset, max_node, target_idx, force_flag)
     
     all_nbe_outputs = {}
     
     # Move edge indices to device once
     for k, v in all_edge_indices.items():
         all_edge_indices[k] = v.to(device)
+    
+    if force_flag:
+        for k, v in all_force_tensors.items():
+            all_force_tensors[k] = v.to(device)
 
     # Prediction Loop
     zero_disp = torch.tensor([0.5, 0.5, 0.5])
@@ -167,8 +189,15 @@ def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neigh
             inputs = inputs.to(device)
             edge_index = all_edge_indices[key]
             
-            outputs = all_nbe[key](inputs, edge_index)
-            pred = outputs[0]
+            if force_flag:
+                force_tensor = all_force_tensors[key]
+                outputs = all_nbe[key](inputs, edge_index, force_tensor)
+            else:
+                outputs = all_nbe[key](inputs, edge_index)
+            pred = outputs[0,0,:]
+            # print(f"inputs.shape: {inputs.shape}, outputs.shape: {outputs.shape}, pred.shape: {pred.shape}, edge_index.shape: {edge_index.shape}")
+            # print(all_nbe[key].finetune,all_nbe[key].return_only_central)
+            # exit()
             
             if pred.shape[0] == 6:
                 pred = torch.cat([zero_disp.to(pred.device), pred], dim=0)
@@ -178,7 +207,7 @@ def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neigh
             params = all_nbe_params[key]
             max_vals = params["max_values_tensor"].to(device)
             alpha = params["alpha"]
-        
+
             phys_val = oka_denormalize(pred, max_vals, alpha)
             all_physical_outputs[key] = phys_val
 
@@ -198,8 +227,12 @@ def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neigh
                 inputs = inputs.to(device)
                 edge_index = all_edge_indices[key]
                 
-                outputs = all_nbe[key](inputs, edge_index)
-                pred = outputs[0]
+                if force_flag:
+                    force_tensor = all_force_tensors[key]
+                    outputs = all_nbe[key](inputs, edge_index, force_tensor)
+                else:
+                    outputs = all_nbe[key](inputs, edge_index)
+                pred = outputs[0,0,:]
                 
                 if pred.shape[0] == 6:
                     pred = torch.cat([zero_disp.to(pred.device), pred], dim=0)
@@ -211,12 +244,13 @@ def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neigh
                 alpha = params["alpha"]
                 phys_val = oka_denormalize(pred, max_vals, alpha)
                 current_step_physical_outputs[key] = phys_val
+
         
-        all_nbe_outputs = current_step_outputs
-        all_physical_outputs = current_step_physical_outputs
+        # all_nbe_outputs = current_step_outputs
+        # all_physical_outputs = current_step_physical_outputs
         
-        all_outputs_list.append(all_nbe_outputs.copy())
-        all_next_inputs = convert_physical_output_to_input_gnn(all_physical_outputs, all_neighbor_node, all_nbe_params, device)
+        all_outputs_list.append(current_step_outputs.copy())
+        all_next_inputs = convert_physical_output_to_input_gnn(current_step_physical_outputs, all_neighbor_node, all_nbe_params, device)
     
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -226,6 +260,7 @@ def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neigh
 
     # Result DataFrame
     result_df_list = []
+    raw_df_list = []
     for time in range(2, 21):
         if time not in all_denormalized_outputs:
             continue
@@ -234,9 +269,26 @@ def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neigh
         time_df['time'] = time
         time_df['node_id'] = time_df.index
         result_df_list.append(time_df)
+
+        # Raw outputs
+        list_idx = time - 2
+        if list_idx < len(all_outputs_list):
+            step_outputs = all_outputs_list[list_idx]
+            if step_outputs:
+                # Convert tensors to numpy
+                step_data = {k: v.cpu().numpy() for k, v in step_outputs.items()}
+                raw_step_df = pd.DataFrame.from_dict(step_data, orient='index')
+                raw_step_df.columns = [f"{col}_raw" for col in all_nbe_dataset[1].columns]
+                raw_step_df['time'] = time
+                raw_step_df['node_id'] = raw_step_df.index
+                raw_df_list.append(raw_step_df)
     
     if result_df_list:
         result_df = pd.concat(result_df_list, axis=0)
+        
+        if raw_df_list:
+            raw_df = pd.concat(raw_df_list, axis=0)
+            result_df = pd.merge(result_df, raw_df, on=['time', 'node_id'], how='left')
         
         time1_correct_df = correct_df[correct_df['time']==1]
         result_df = pd.concat([time1_correct_df[['time','node_id']+list(all_nbe_dataset[1].columns)], result_df], axis=0)
@@ -258,15 +310,17 @@ def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neigh
         result_df = result_df.drop(columns=['cum_dx', 'cum_dy', 'cum_dz'])
         result_df = result_df.reset_index(drop=True)
 
-        merged_df = pd.merge(result_df, correct_df[['time', 'node_id', 'x', 'y', 'z', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx']], 
+        merged_df = pd.merge(result_df, correct_df[['time', 'node_id', 'x', 'y', 'z', 'dx', 'dy', 'dz', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx']], 
                              on=['time', 'node_id'], suffixes=('', '_correct'))
         
-        for col in ['x', 'y', 'z', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx']:
+        for col in ['x', 'y', 'z', 'dx', 'dy', 'dz', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx']:
             merged_df[f'{col}_error'] = abs(merged_df[col] - merged_df[f'{col}_correct'])
 
+        raw_cols = [f"{col}_raw" for col in all_nbe_dataset[1].columns]
         cols_to_keep = ['time', 'node_id'] + \
-                       ['x', 'y', 'z', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx'] + \
-                       [f'{col}_error' for col in ['x', 'y', 'z', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx']]
+                       ['x', 'y', 'z', 'dx', 'dy', 'dz', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx'] + \
+                       [f'{col}_error' for col in ['x', 'y', 'z', 'dx', 'dy', 'dz', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx']] + \
+                       raw_cols
         
         final_df = merged_df[cols_to_keep]
 
@@ -294,8 +348,11 @@ if __name__ == "__main__":
     parser.add_argument("--global_normalize", action="store_true", help="Whether to apply global normalization to the dataset")
     parser.add_argument("--output_dir", default="/workspace/results", help="Directory to save evaluation results")
     parser.add_argument("--alpha", type=float, default=8.0, help="Oka normalization alpha parameter")
-    parser.add_argument("--files_num", type=int, default=None, help="Number of files to process from index 0")
+    parser.add_argument("--files_num", type=str, default=None, help="Number of files to process from index 0 or 'all'")
     parser.add_argument("--model_name", type=str, default="best_pretrain.pth", help="Name of the model file to load (default: best_pretrain.pth)")
+    parser.add_argument("--force_flag", action="store_true", help="Whether to use force input")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for file selection")
+    parser.add_argument("--multi_fully_layer", type=int, default=1, help="Number of fully connected layers in readout")
     args = parser.parse_args()
 
     device = torch.device(args.device) if args.device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -305,7 +362,8 @@ if __name__ == "__main__":
     all_nbe_dataset = all_node_nbe_dataset_init(args.dataset_dir,
                                                 args.all_node_id, 
                                                 global_normalize=args.global_normalize,
-                                                alpha=args.alpha)
+                                                alpha=args.alpha,
+                                                force_flag=args.force_flag)
     
     # Check if dataset is empty or failed
     if not all_nbe_dataset:
@@ -322,7 +380,9 @@ if __name__ == "__main__":
                                                             args.hidden_size, 
                                                             args.num_layers, 
                                                             args.dropout,
-                                                            args.gnn_type)
+                                                            args.gnn_type,
+                                                            args.force_flag,
+                                                            args.multi_fully_layer)
     
     print(all_nbe_dataset[1].files[args.target_idx])
     # NBEモデルの取得
@@ -331,9 +391,24 @@ if __name__ == "__main__":
 
     # Determine indices to process
     if args.files_num is not None:
-        target_indices = range(args.files_num)
+        total_files = len(all_nbe_dataset[1].files)
+        if args.files_num.lower() == 'all':
+            target_indices = range(total_files)
+        else:
+            try:
+                files_num = int(args.files_num)
+                np.random.seed(args.seed)
+                if files_num > total_files:
+                    target_indices = range(total_files)
+                else:
+                    target_indices = np.random.choice(total_files, files_num, replace=False)
+                    target_indices.sort()
+            except ValueError:
+                print(f"Error: files_num must be an integer or 'all'. Got {args.files_num}")
+                exit(1)
+        print(f"Selected indices: {target_indices}")
     else:
         target_indices = [args.target_idx]
 
     for target_idx in target_indices:
-        run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neighbor_node, all_nbe, device, args.output_dir)
+        run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neighbor_node, all_nbe, device, args.output_dir, args.force_flag)

@@ -1,4 +1,4 @@
-# Hydra configuration for peephole LSTM training (moved under config/NBE)
+# Hydra configuration for MLP training
 
 # Data settings
 train_dir: /workspace/dataset/bin/toy_all_model/train
@@ -8,7 +8,7 @@ global_normalize: True
 
 preload: false
 glob: "*.feather"
-alpha: 8.0
+alpha: 3.0
 
 # Dataloader
 batch_size: 128
@@ -16,29 +16,25 @@ num_workers: 2
 
 # Model
 hidden_size: 128
-num_layers: 1
-dropout: 0.5
+num_layers: 9
+dropout: 0.0
 output_size: null
 
 # Optimization
 lr: 0.001
 weight_decay: 0.0
-epochs: 50
+epochs: 100
+loss_weight_alpha: 10.0
+loss_weight_gamma: 3.0
+loss_weight_time_beta: 10.0
 
 # LR / early stopping
 lr_patience: 10
-lr_factor: 0.9
+lr_factor: 0.5
 min_lr: 1e-6
-max_lr_reductions: 10
+max_lr_reductions: 5
 early_stop_patience: 15
-lr_decay_start_epoch: 30
-lr_decay_step_size: 10
-
-loss_weight_alpha: 0.0
-loss_weight_gamma: 0.0
-loss_weight_time_beta: 0.0
-loss_weight_disp: 0.0
 
 # Misc
-save_dir: NBE/peepholeLSTM_basemodel
+save_dir: NBE/MLP_alpha3
 seed: 42

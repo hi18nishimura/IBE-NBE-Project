@@ -184,7 +184,7 @@ class NbeDataset(Dataset):
             else:
                 summary_overall_max = "/workspace/dataset/bin/toy_all_model/train/summary_per_node_max_values.csv"
         self.summary_overall_max = summary_overall_max
-        print(f"Using summary_overall_max: {self.summary_overall_max}")
+        #print(f"Using summary_overall_max: {self.summary_overall_max}")
         self.max_map: Dict[str, float] = {}
         if self.global_normalize:
             if self.summary_overall_max and Path(self.summary_overall_max).exists():

@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
 from src.Dataloader.nbeDataset import NbeDataset
-from src.Networks.nbe_peephole_lstm import NbePeepholeLSTM, PeepholeLSTMCell
+from src.Networks.nbe_mlp import NbeMLP
 
 from tqdm import tqdm
 
@@ -39,9 +39,9 @@ class TrainConfig:
     num_workers: int = 4
 
     # model
-    hidden_size: int = 64
-    num_layers: int = 2
-    dropout: float = 0.0
+    hidden_size: int = 128
+    num_layers: int = 9
+    dropout: float = 0.0 # Not used in NbeMLP currently but kept for config compatibility
     output_size: Optional[int] = None
 
     # optimization
@@ -52,8 +52,7 @@ class TrainConfig:
     # loss weighting
     loss_weight_alpha: float = 0.0
     loss_weight_gamma: float = 2.0
-    loss_weight_time_beta: float = 10.0
-    loss_weight_disp: float = 0.0
+    loss_weight_time_beta: float = 0.0
 
     # lr/early stopping
     lr_patience: int = 5
@@ -61,11 +60,9 @@ class TrainConfig:
     min_lr: float = 1e-6
     max_lr_reductions: int = 3
     early_stop_patience: int = 10
-    lr_decay_start_epoch: int = 30
-    lr_decay_step_size: int = 10
 
     # misc
-    save_dir: str = "outputs/peephole_train"
+    save_dir: str = "outputs/mlp_train"
     seed: int = 42
 
 
@@ -78,27 +75,6 @@ def seed_all(seed: int) -> None:
         random.seed(seed)
     except Exception:
         pass
-
-
-def he_init(module: nn.Module) -> None:
-    """Apply He (Kaiming) initialization to Linear layers and peephole cell weights."""
-    if isinstance(module, nn.Linear):
-        nn.init.kaiming_uniform_(module.weight, a=math.sqrt(5))
-        if module.bias is not None:
-            nn.init.zeros_(module.bias)
-    # PeepholeLSTMCell contains Linear layers `wx` and `wh` and peephole params
-    if isinstance(module, PeepholeLSTMCell):
-        nn.init.kaiming_uniform_(module.wx.weight, a=math.sqrt(5))
-        if module.wx.bias is not None:
-            nn.init.zeros_(module.wx.bias)
-        nn.init.kaiming_uniform_(module.wh.weight, a=math.sqrt(5))
-        if module.wh.bias is not None:
-            nn.init.zeros_(module.wh.bias)
-        # peephole vectors: initialize to zeros (conservative)
-        nn.init.zeros_(module.w_ci)
-        nn.init.zeros_(module.w_cf)
-        nn.init.zeros_(module.w_co)
-
 
 def collate_fn(batch):
     # batch: list of dicts {inputs: [19,F], targets: [19,T]}
@@ -113,9 +89,6 @@ def run_training(cfg: TrainConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # determine node IDs to train
-    # cfg may be a dataclass, a dict, or an OmegaConf DictConfig depending on
-    # how hydra was invoked (and whether overrides were applied). Read values
-    # robustly using OmegaConf.select when available.
     from omegaconf import OmegaConf
 
     def _cfg_get(key: str):
@@ -138,7 +111,7 @@ def run_training(cfg: TrainConfig) -> None:
         node_ids = list(range(int(node_min), int(node_max) + 1))
     else:
         node_ids = [int(node_id_cfg)]
-
+    print(f"Alpha: {cfg.alpha}, Loss Weight Alpha: {cfg.loss_weight_alpha}, Loss Weight Gamma: {cfg.loss_weight_gamma}") 
     for node_id in node_ids:
         print(f"Starting training for node_id={node_id}")
 
@@ -160,32 +133,33 @@ def run_training(cfg: TrainConfig) -> None:
             global_normalize=global_normalize,
         )
 
-        train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, num_workers=cfg.num_workers, persistent_workers=True)
-        val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers, persistent_workers=True)
+        train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, num_workers=cfg.num_workers, persistent_workers=True, collate_fn=collate_fn)
+        val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers, persistent_workers=True, collate_fn=collate_fn)
 
         input_size = train_ds.input_feature_size
         target_size = train_ds.node_feature_counts[train_ds.node_id]
         output_size = cfg.output_size or target_size
 
-        model = NbePeepholeLSTM(input_size=input_size, hidden_size=cfg.hidden_size, output_size=output_size, num_layers=cfg.num_layers, dropout=cfg.dropout)
-        model.apply(he_init)
+        model = NbeMLP(
+            input_dim=input_size, 
+            output_dim=output_size, 
+            hidden_dim=cfg.hidden_size, 
+            num_hidden_layers=cfg.num_layers
+        )
         model.to(device)
 
         optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=float(cfg.lr_factor),
+            patience=cfg.lr_patience,
+            min_lr=float(cfg.min_lr),
+        )
 
-        # we'll use a manual lr reduction mechanism so we can count reductions
-        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        #     optimizer,
-        #     mode="min",
-        #     factor=cfg.lr_factor,
-        #     patience=cfg.lr_patience,
-        #     min_lr=cfg.min_lr,
-        # )
 
         criterion = nn.MSELoss()
 
-        # prepare logging: per-node save dir
-        # Save to a single node-level directory (do not split by time step/run)
         save_root = Path(cfg.save_dir) / f"{node_id}"
         save_root.mkdir(parents=True, exist_ok=True)
         run_dir = save_root
@@ -194,58 +168,55 @@ def run_training(cfg: TrainConfig) -> None:
         best_val = float("inf")
         epochs_since_improve = 0
         lr_reductions = 0
-        last_lr = optimizer.param_groups[0]["lr"]
-
+        
         best_ckpt = run_dir / "best.pth"
 
-        #for epoch in tqdm(range(1, cfg.epochs + 1)):
         for epoch in range(1, cfg.epochs + 1):
-            # LR Decay Logic (Epoch based)
-            if epoch >= cfg.lr_decay_start_epoch and (epoch - cfg.lr_decay_start_epoch) % cfg.lr_decay_step_size == 0:
-                    for param_group in optimizer.param_groups:
-                        if param_group['lr'] > cfg.min_lr:
-                            param_group['lr'] *= cfg.lr_factor
-                            print(f"Decaying learning rate to {param_group['lr']}")
-
             model.train()
             train_losses = []
             for batch in train_loader:
-                xb,yb = batch["inputs"], batch["targets"]
+                xb, yb = batch
                 xb = xb.to(device)
                 yb = yb.to(device)
+                
+                # Reshape for MLP: (Batch, Time, Feats) -> (Batch * Time, Feats)
+                B, T, F_in = xb.shape
+                _, _, F_out = yb.shape
+                
+                xb_flat = xb.view(-1, F_in)
+                yb_flat = yb.view(-1, F_out)
+                
                 optimizer.zero_grad()
-                outputs, _ = model(xb)
+                outputs = model(xb_flat)
                 
                 loss_weight_alpha = getattr(cfg, "loss_weight_alpha", 0.0)
-                loss_weight_gamma = getattr(cfg, "loss_weight_gamma", 1.0)
+                loss_weight_gamma = getattr(cfg, "loss_weight_gamma", 2.0)
                 loss_weight_time_beta = getattr(cfg, "loss_weight_time_beta", 0.0)
-                loss_weight_disp = getattr(cfg, "loss_weight_disp", 0.0)
 
                 weights = 1.0
 
                 if loss_weight_alpha > 0.0:
                     # W(Q) = 1 + alpha * |(Q - 0.5) / 0.4|^gamma
-                    diff = torch.abs((yb - 0.5) / 0.4)
+                    diff = torch.abs((yb_flat - 0.5) / 0.4)
                     weights = weights * (1.0 + loss_weight_alpha * torch.pow(diff, loss_weight_gamma))
                 
                 if loss_weight_time_beta > 0.0:
                     # W(t) = 1 + beta * (t / (T-1))
-                    seq_len = yb.shape[1]
-                    t_indices = torch.arange(seq_len, device=device, dtype=torch.float32)
-                    if seq_len > 1:
-                        t_norm = t_indices / (seq_len - 1)
+                    t_indices = torch.arange(T, device=device, dtype=torch.float32)
+                    if T > 1:
+                        t_norm = t_indices / (T - 1)
                     else:
                         t_norm = torch.zeros_like(t_indices)
+                    
                     time_weights = 1.0 + loss_weight_time_beta * t_norm
-                    weights = weights * time_weights.view(1, -1, 1)
-                if output_size==9 and loss_weight_disp > 0.0:
-                    disp_weights = torch.tensor([loss_weight_disp,loss_weight_disp,loss_weight_disp,1,1,1,1,1,1], device=device)
-                    weights = weights * disp_weights.view(1,1,-1)
+                    # (T,) -> (B*T, 1)
+                    time_weights_expanded = time_weights.repeat(B).view(-1, 1)
+                    weights = weights * time_weights_expanded
 
                 if isinstance(weights, float) and weights == 1.0:
-                    loss = criterion(outputs, yb)
+                    loss = criterion(outputs, yb_flat)
                 else:
-                    loss = torch.mean(weights * (outputs - yb) ** 2)
+                    loss = torch.mean(weights * (outputs - yb_flat) ** 2)
 
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
@@ -259,12 +230,50 @@ def run_training(cfg: TrainConfig) -> None:
             val_losses = []
             with torch.no_grad():
                 for batch in val_loader:
-                    xb,yb = batch["inputs"], batch["targets"]
+                    xb, yb = batch
                     xb = xb.to(device)
                     yb = yb.to(device)
-                    outputs, _ = model(xb)
-                    min_dim = min(outputs.shape[-1], yb.shape[-1])
-                    loss = criterion(outputs[..., :min_dim], yb[..., :min_dim])
+                    
+                    B, T, F_in = xb.shape
+                    _, _, F_out = yb.shape
+                    
+                    xb_flat = xb.view(-1, F_in)
+                    yb_flat = yb.view(-1, F_out)
+                    
+                    outputs = model(xb_flat)
+                    
+                    # Handle potential dimension mismatch if output_size was forced differently (unlikely here but good practice)
+                    min_dim = min(outputs.shape[-1], yb_flat.shape[-1])
+                    
+                    loss_weight_alpha = getattr(cfg, "loss_weight_alpha", 0.0)
+                    loss_weight_gamma = getattr(cfg, "loss_weight_gamma", 2.0)
+                    loss_weight_time_beta = getattr(cfg, "loss_weight_time_beta", 0.0)
+
+                    yb_sliced = yb_flat[..., :min_dim]
+                    out_sliced = outputs[..., :min_dim]
+                    
+                    weights = 1.0
+
+                    if loss_weight_alpha > 0.0:
+                        diff = torch.abs((yb_sliced - 0.5) / 0.4)
+                        weights = weights * (1.0 + loss_weight_alpha * torch.pow(diff, loss_weight_gamma))
+                    
+                    if loss_weight_time_beta > 0.0:
+                        t_indices = torch.arange(T, device=device, dtype=torch.float32)
+                        if T > 1:
+                            t_norm = t_indices / (T - 1)
+                        else:
+                            t_norm = torch.zeros_like(t_indices)
+                        
+                        time_weights = 1.0 + loss_weight_time_beta * t_norm
+                        time_weights_expanded = time_weights.repeat(B).view(-1, 1)
+                        weights = weights * time_weights_expanded
+
+                    if isinstance(weights, float) and weights == 1.0:
+                        loss = criterion(out_sliced, yb_sliced)
+                    else:
+                        loss = torch.mean(weights * (out_sliced - yb_sliced) ** 2)
+                    
                     val_losses.append(loss.item())
 
             val_loss = float(np.mean(val_losses)) if val_losses else 0.0
@@ -277,7 +286,6 @@ def run_training(cfg: TrainConfig) -> None:
             if improved:
                 best_val = val_loss
                 epochs_since_improve = 0
-                # save best
                 torch.save({
                     "model_state": model.state_dict(),
                     "optimizer_state": optimizer.state_dict(),
@@ -287,19 +295,17 @@ def run_training(cfg: TrainConfig) -> None:
             else:
                 epochs_since_improve += 1
 
-            # if no improvement for lr_patience epochs, step scheduler
-            # if epochs_since_improve >= cfg.lr_patience:
-            #     prev_lr = optimizer.param_groups[0]["lr"]
-            #     scheduler.step(val_loss)
-            #     cur_lr = optimizer.param_groups[0]["lr"]
-            #     if cur_lr < prev_lr - 1e-12:
-            #         lr_reductions += 1
-            #         epochs_since_improve = 0
+            if epochs_since_improve >= cfg.lr_patience:
+                prev_lr = optimizer.param_groups[0]["lr"]
+                scheduler.step(val_loss)
+                cur_lr = optimizer.param_groups[0]["lr"]
+                if cur_lr < prev_lr - 1e-12:
+                    lr_reductions += 1
+                    epochs_since_improve = 0
 
-            # early stopping: if we've reduced lr enough times and no improvement for early_stop_patience
-            # if lr_reductions >= cfg.max_lr_reductions and epochs_since_improve >= cfg.early_stop_patience:
-            #     print(f"Early stopping at epoch {epoch}: lr_reductions={lr_reductions}, epochs_since_improve={epochs_since_improve}")
-            #     break
+            if lr_reductions >= cfg.max_lr_reductions and epochs_since_improve >= cfg.early_stop_patience:
+                print(f"Early stopping at epoch {epoch}: lr_reductions={lr_reductions}, epochs_since_improve={epochs_since_improve}")
+                break
 
             print(f"node={node_id} Epoch {epoch}/{cfg.epochs}  train={train_loss:.6f}  val={val_loss:.6f}  lr={optimizer.param_groups[0]['lr']:.6e}")
 
@@ -308,7 +314,7 @@ def run_training(cfg: TrainConfig) -> None:
         tqdm.write(f"Training finished for node {node_id}. Best val: {best_val:.6f}. Checkpoint saved to {best_ckpt}")
 
 
-@hydra.main(version_base=None, config_path="../../config/NBE", config_name="peephole_lstm")
+@hydra.main(version_base=None, config_path="../../config/NBE", config_name="mlp")
 def main(cfg: TrainConfig) -> None:
     run_training(cfg)
 

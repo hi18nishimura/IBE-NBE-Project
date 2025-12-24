@@ -97,19 +97,53 @@ def oka_normalize_series(series: pd.Series, pwidth: float, alpha: float) -> pd.S
 	return pd.Series(normed, index=series.index)
 
 
-def plot_histograms(df: pd.DataFrame, columns: List[str], output_dir: Path, bins: int, alpha: float, log_plot: bool = False) -> List[Path]:
+def oka_denormalize_value(val: float, pwidth: float, alpha: float) -> float:
+	"""Oka 正規化の逆変換を行う。
+	
+	p_in = sign(p_out - 0.5) * pwidth * (|p_out - 0.5| / 0.4)^alpha
+	"""
+	if pwidth == 0:
+		return 0.0
+	
+	diff = val - 0.5
+	sign = np.sign(diff)
+	abs_diff = np.abs(diff)
+	
+	# (|p_out - 0.5| / 0.4)^alpha
+	# Note: 0.4 is the scaling factor in forward transform
+	
+	return sign * pwidth * ((abs_diff / 0.4) ** alpha)
+
+def plot_histograms(df: pd.DataFrame, columns: List[str], output_dir: Path, bins: int, alpha: float, pwidth_map: dict[str, float] = None, log_plot: bool = False) -> List[Path]:
 	output_dir.mkdir(parents=True, exist_ok=True)
 	paths: List[Path] = []
 	for column in columns:
 		series = df[column].dropna()
-		fig, ax = plt.subplots(figsize=(6, 4))
-		ax.hist(series, bins=bins, color="#4e79a7", alpha=0.85)
+		fig, ax = plt.subplots(figsize=(8, 5)) # Slightly wider for dual axis
+		ax.hist(series, bins=bins, color="#4e79a7", alpha=0.85, label='Frequency')
 		if log_plot:
 			ax.set_yscale('log')
 		ax.set_title(f"Histogram of {column} (Oka-normalized)")
-		ax.set_xlabel(column)
+		ax.set_xlabel(f"{column} (Normalized)")
 		ax.set_ylabel("Frequency")
 		ax.grid(True, linestyle=":", alpha=0.4)
+		
+		# Add secondary y-axis for original scale if pwidth is available
+		if pwidth_map and column in pwidth_map:
+			pwidth = pwidth_map[column]
+			ax2 = ax.twinx()
+			
+			# Create a range of normalized values to plot the conversion curve
+			x_vals = np.linspace(series.min(), series.max(), 100)
+			y_vals = [oka_denormalize_value(x, pwidth, alpha) for x in x_vals]
+			
+			ax2.plot(x_vals, y_vals, color='red', alpha=0.6, linestyle='--', linewidth=1.5, label='Original Scale Mapping')
+			ax2.set_ylabel(f"Original Value (Max: {pwidth:.2f})", color='red')
+			ax2.tick_params(axis='y', labelcolor='red')
+			
+			# Align x-axis limits
+			ax2.set_xlim(ax.get_xlim())
+			
 		fig.tight_layout()
 		output_path = output_dir / f"hist_{column}_{alpha}.png"
 		fig.savefig(output_path, dpi=200)
@@ -130,37 +164,51 @@ def main(argv: Optional[List[str]] = None) -> int:
 	parser = build_parser()
 	args = parser.parse_args(argv)
 
-	combined = read_feather_files(args.input_dir, args.glob)
+	if args.input_dir.is_file():
+		combined = pd.read_feather(args.input_dir)
+		print(f"Loaded single file: {args.input_dir}")
+	else:
+		combined = read_feather_files(args.input_dir, args.glob)
+		print(f"Loaded {len(combined)} rows from {args.input_dir} (pattern={args.glob})")
+
 	columns = args.columns or DEFAULT_COLUMNS
 	# validate columns exist
 	missing = [col for col in columns if col not in combined.columns]
 	if missing:
 		raise ValueError(f"入力データに存在しない列があります: {missing}")
 
-	# determine pwidth per column (use provided pwidth for all if specified)
 	pwidth_map: dict[str, float] = {}
-	for col in columns:
+
+	if args.input_dir.is_file() and args.input_dir.name == "normalized_dataset.feather":
+		print("Skipping normalization for normalized_dataset.feather")
+		normed_df = combined.copy()
+		# Cannot determine pwidth from normalized data alone without metadata
+		# If user provided pwidth via args, we can use it
 		if args.pwidth is not None:
-			pwidth_map[col] = float(args.pwidth)
-		else:
-				# use max value in data for the column (p_width はその変数の最大値)
-				pw = float(combined[col].max()) if not combined[col].empty else 0.0
-				# if maximum is non-positive, treat as missing (map to 0 -> center 0.5)
-				if pw <= 0.0 or np.isnan(pw):
-					pw = 0.0
-				pwidth_map[col] = pw
+			for col in columns:
+				pwidth_map[col] = float(args.pwidth)
+	else:
+		# determine pwidth per column (use provided pwidth for all if specified)
+		for col in columns:
+			if args.pwidth is not None:
+				pwidth_map[col] = float(args.pwidth)
+			else:
+					# use max value in data for the column (p_width はその変数の最大値)
+					pw = float(combined[col].max()) if not combined[col].empty else 0.0
+					# if maximum is non-positive, treat as missing (map to 0 -> center 0.5)
+					if pw <= 0.0 or np.isnan(pw):
+						pw = 0.0
+					pwidth_map[col] = pw
 
-	# apply oka normalization column-wise and build normalized df
-	normed_df = combined[[]].copy()
-	for col in columns:
-		pwidth = pwidth_map[col]
-		normed = oka_normalize_series(combined[col], pwidth=pwidth, alpha=args.alpha)
-		# name normalized column same as original (overwrite) so plotting and summary use normalized values
-		normed_df[col] = normed
+		# apply oka normalization column-wise and build normalized df
+		normed_df = combined[[]].copy()
+		for col in columns:
+			pwidth = pwidth_map[col]
+			normed = oka_normalize_series(combined[col], pwidth=pwidth, alpha=args.alpha)
+			# name normalized column same as original (overwrite) so plotting and summary use normalized values
+			normed_df[col] = normed
 
-	print(f"Loaded {len(combined)} rows from {args.input_dir} (pattern={args.glob})")
-
-	image_paths = plot_histograms(normed_df, columns, args.output_dir, args.bins, args.alpha, log_plot=args.log_plot)
+	image_paths = plot_histograms(normed_df, columns, args.output_dir, args.bins, args.alpha, pwidth_map=pwidth_map, log_plot=args.log_plot)
 	summary_path = summarize(normed_df, columns, args.output_dir)
 
 	# also save normalized combined dataframe as feather for downstream use

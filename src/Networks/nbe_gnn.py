@@ -19,7 +19,8 @@ class NbeGNN(nn.Module):
         dropout: float = 0.5,
         gnn_type: str = 'GCN',
         finetune: bool = False,
-        return_only_central: bool = False
+        return_only_central: bool = False,
+        multi_fully_layer: int = 1
     ) -> None:
         super().__init__()
         self.input_size = input_size
@@ -30,6 +31,7 @@ class NbeGNN(nn.Module):
         self.gnn_type = gnn_type
         self.finetune = finetune
         self.return_only_central = return_only_central
+        self.multi_fully_layer = multi_fully_layer
 
         self.convs = nn.ModuleList()
         
@@ -55,10 +57,22 @@ class NbeGNN(nn.Module):
             # Single layer (outputs hidden_size)
             self.convs.append(ConvLayer(input_size, hidden_size))
             
-        # Readout layer (Linear)
-        self.readout = nn.Linear(hidden_size, output_size)
+        # Readout layer (Linear or MLP)
+        if multi_fully_layer > 1:
+            layers = []
+            for _ in range(multi_fully_layer - 1):
+                layers.append(nn.Linear(hidden_size, hidden_size))
+                layers.append(nn.ReLU())
+                layers.append(nn.Dropout(p=dropout))
+            layers.append(nn.Linear(hidden_size, output_size))
+            self.readout = nn.Sequential(*layers)
+        else:
+            self.readout = nn.Linear(hidden_size, output_size)
 
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, global_features: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if global_features is not None:
+            x = self._concat_global(x, global_features)
+
         # Case 1: (Batch, Seq, Nodes, Input) -> 4 dims
         if x.dim() == 4:
             B, S, N, F = x.size()
@@ -94,6 +108,29 @@ class NbeGNN(nn.Module):
                 return out.squeeze(0)
             return out
 
+    def _concat_global(self, x: torch.Tensor, global_features: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 4:
+            B, S, N, _ = x.shape
+            if global_features.dim() == 1:
+                global_features = global_features.unsqueeze(0)
+            if global_features.size(0) == 1 and B > 1:
+                global_features = global_features.expand(B, -1)
+            global_expanded = global_features.view(B, 1, 1, -1).expand(-1, S, N, -1)
+            return torch.cat([x, global_expanded], dim=-1)
+        elif x.dim() == 3:
+            S, N, _ = x.shape
+            if global_features.dim() == 2:
+                global_features = global_features.squeeze(0)
+            global_expanded = global_features.view(1, 1, -1).expand(S, N, -1)
+            return torch.cat([x, global_expanded], dim=-1)
+        elif x.dim() == 2:
+            N, _ = x.shape
+            if global_features.dim() == 2:
+                global_features = global_features.squeeze(0)
+            global_expanded = global_features.view(1, -1).expand(N, -1)
+            return torch.cat([x, global_expanded], dim=-1)
+        return x
+
     def _forward_seq(self, x: torch.Tensor, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
         """
         Process a sequence of graph states.
@@ -115,8 +152,39 @@ class NbeGNN(nn.Module):
                         # current_input: (TotalNodes, Input) -> (Batch, NumNodes, Input)
                         # Update only central nodes (index 0)
                         current_input_view = current_input.view(batch_size, num_nodes, -1)
+                        
+                        if self.training:
+                            # Calculate error for central nodes
+                            gt_central = current_input_view[:, 0, :self.output_size]
+                            error = torch.abs(out_t.detach() - gt_central)
+                            noise_scale = torch.mean(error, dim=1, keepdim=True).unsqueeze(1) # (Batch, 1, 1)
+                            
+                            # Add noise to unchanged parts of central node
+                            if self.input_size > self.output_size:
+                                noise_central = torch.randn_like(current_input_view[:, 0, self.output_size:]) * noise_scale.squeeze(1)
+                                current_input_view[:, 0, self.output_size:] += noise_central
+                                current_input_view[:, 0, self.output_size:] = torch.clamp(current_input_view[:, 0, self.output_size:], 0.1, 0.9)
+                            
+                            # Add noise to neighbor nodes (all features)
+                            if num_nodes > 1:
+                                noise_neighbors = torch.randn_like(current_input_view[:, 1:, :]) * noise_scale
+                                current_input_view[:, 1:, :] += noise_neighbors
+                                current_input_view[:, 1:, :] = torch.clamp(current_input_view[:, 1:, :], 0.1, 0.9)
+
                         current_input_view[:, 0, :self.output_size] = out_t.detach()
                     else:
+                        if self.training:
+                            # Calculate error
+                            gt = current_input[:, :self.output_size]
+                            error = torch.abs(out_t.detach() - gt)
+                            noise_scale = torch.mean(error, dim=1, keepdim=True) # (TotalNodes, 1)
+                            
+                            # Add noise to unchanged parts
+                            if self.input_size > self.output_size:
+                                noise = torch.randn_like(current_input[:, self.output_size:]) * noise_scale
+                                current_input[:, self.output_size:] += noise
+                                current_input[:, self.output_size:] = torch.clamp(current_input[:, self.output_size:], 0.1, 0.9)
+
                         current_input[:, :self.output_size] = out_t.detach() # out_tをdetachして勾配計算のグラフを分離を推奨
                         
                     out_t = self._forward_single(current_input, edge_index, num_nodes)
@@ -143,7 +211,8 @@ class NbeGNN(nn.Module):
     def _forward_single(self, x: torch.Tensor, edge_index: torch.Tensor, num_nodes: Optional[int] = None) -> torch.Tensor:
         for i, conv in enumerate(self.convs):
             x = conv(x, edge_index)
-            x = F.relu(x)
+            #x = F.relu(x)
+            x = F.tanh(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         
         # x: (TotalNodes, Hidden)

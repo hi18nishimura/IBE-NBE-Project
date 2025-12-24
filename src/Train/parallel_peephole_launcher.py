@@ -90,7 +90,7 @@ def main():
             per_save = str(Path(args.save_dir) / str(nid))
             # If user requested skipping when a saved model exists, check and continue
             if args.exist_model:
-                best_path = Path(per_save)/ str(nid) / "best.pth"
+                best_path = Path(per_save) / "best.pth"
                 if best_path.exists():
                     print(f"Skipping node {nid}: model exists at {best_path}")
                     continue

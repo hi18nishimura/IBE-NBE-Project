@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Iterable, List, Optional, Dict, Any
 
@@ -90,12 +91,67 @@ class NbeGNNDataset(Dataset):
         summary_overall_max: Optional[str | Path] = None,
         node_connection_file: Optional[str | Path] = None,
         fixed_nodes_file: Optional[str | Path] = None,
+        liver_coord_file: Optional[str | Path] = None,
         global_normalize: bool = True,
+        force_flag: bool = False,
     ) -> None:
+        self.force_flag = force_flag
         self.data_dir = Path(data_dir)
         if not self.data_dir.exists():
             raise NotADirectoryError(f"data_dir not found: {self.data_dir}")
         self.files = sorted(self.data_dir.glob(glob))
+        if liver_coord_file is not None:
+            #　liver_coodinates.csvを読み込む
+            liver_coord_path = Path(liver_coord_file)
+            if liver_coord_path.exists():
+                df_coords = pd.read_csv(liver_coord_path)
+                # node_idの３次元座標値（x,y,z）を取得する
+                target_row = df_coords[df_coords['node_id'] == node_id]
+                if not target_row.empty:
+                    tx = target_row.iloc[0]['x']
+                    ty = target_row.iloc[0]['y']
+                    tz = target_row.iloc[0]['z']
+                    
+                    # node_idの座標値との距離を計算して、target_dispという新しい列を作る。node_id自身の情報は0にする
+                    df_coords['target_disp'] = np.sqrt(
+                        (df_coords['x'] - tx)**2 + 
+                        (df_coords['y'] - ty)**2 + 
+                        (df_coords['z'] - tz)**2
+                    )
+                    
+                    # target_dispとの距離をソートして、上位30%のnode_idを整数のリスト(disp_sort_node_list)として保存する
+                    df_coords = df_coords.sort_values('target_disp')
+                    
+                    # Try increasing rates until files are found
+                    found_files = False
+                    pattern = re.compile(r"node(\d+)")
+                    
+                    #for use_rate in [0.1, 0.2, 0.3, 0.4, 0.5, 1.0]:
+                    for use_rate in [ 0.3, 0.4, 0.5, 1.0]:
+                        top_n = int(len(df_coords) * use_rate)
+                        if top_n < 1: top_n = 1
+                        
+                        disp_sort_node_list = set(df_coords.iloc[:top_n]['node_id'].tolist())
+                        
+                        filtered_files = []
+                        for f in self.files:
+                            match = pattern.search(f.name)
+                            if match:
+                                file_node_id = int(match.group(1))
+                                if file_node_id in disp_sort_node_list:
+                                    filtered_files.append(f)
+                        
+                        if filtered_files:
+                            self.files = filtered_files
+                            print(f"Node {node_id}: Filtered files using rate {use_rate} (Top {top_n} neighbors). Found {len(self.files)} files.")
+                            found_files = True
+                            break
+                    
+                    if not found_files:
+                        print(f"Warning: No files remained after filtering by liver coordinates for node {node_id}")
+            else:
+                print(f"Warning: liver_coord_file not found at {liver_coord_path}")
+
         if not self.files:
             raise FileNotFoundError(f"No files found in {self.data_dir} matching {glob}")
         self.node_id = int(node_id)
@@ -249,7 +305,14 @@ class NbeGNNDataset(Dataset):
         df = self._read_file(idx)
         node_tables = self._extract_node_tables(df)
         processed = self._transform_input_output(node_tables)
-        return processed
+        if self.force_flag:
+            force_node_id = df['force_node_id'].loc[0]
+            force_data = df[df['node_id']==force_node_id][['dx','dy','dz']].values[0]
+            force_tensor = torch.tensor(force_data,dtype=torch.float32)
+            processed['force_tensor'] = force_tensor
+            return processed
+        else:
+            return processed
 
     def _transform_input_output(self, node_tables) -> Dict[str, torch.Tensor]:
         """Process node_tables into normalized input/target tensors.

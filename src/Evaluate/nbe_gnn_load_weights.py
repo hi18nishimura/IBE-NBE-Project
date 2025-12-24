@@ -36,7 +36,7 @@ def load_best_checkpoint(
 	"""
 	ckpt_path = find_best_checkpoint(Path(root), model_name=model_name)
 	if ckpt_path is None:
-		return None, None
+		exit()
 	if map_location is None:
 		map_location = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -115,13 +115,19 @@ def build_model_from_ckpt(
 					break
 	if state is None:
 		# nothing we can load
-		return model, ckpt
+		exit()
 	try:
-		model.load_state_dict(state, strict=False)
+		model.load_state_dict(state)
 	except Exception as e:
 		# attempt to convert keys if saved with 'module.' prefixes
-		new_state = {k.replace("module.", ""): v for k, v in state.items()}
-		model.load_state_dict(new_state, strict=False)
+		exit()
+		# new_state = {k.replace("module.", ""): v for k, v in state.items()}
+		# model.load_state_dict(new_state)
+	
+	# Set return_only_central=True if the model has this attribute
+	if hasattr(model, "return_only_central"):
+		model.return_only_central = True
+		
 	model.to(map_location)
 	model.eval()
 	return model, ckpt
@@ -141,7 +147,92 @@ def load_model_from_dir(
 	if ckpt is None:
 		return None, None, None
 	model, ckpt_loaded = build_model_from_ckpt(ckpt, model_ctor, model_ctor_kwargs, map_location=map_location)
+	# verify_weights_loaded(model, ckpt_loaded)
+	# exit()
 	return model, ckpt_loaded, path
+
+def verify_weights_loaded(model, ckpt):
+    """Verify that model parameters match the checkpoint state dict."""
+    print("Verifying weights...")
+    model_state = model.state_dict()
+    
+    # Identify the actual state dict within ckpt
+    ckpt_state_dict = None
+    if isinstance(ckpt, dict):
+        for k in ("model_state", "state_dict", "model_state_dict"):
+            if k in ckpt:
+                ckpt_state_dict = ckpt[k]
+                break
+        
+        if ckpt_state_dict is None:
+            # Maybe ckpt itself is the state dict
+            if all(isinstance(v, torch.Tensor) for v in ckpt.values()):
+                ckpt_state_dict = ckpt
+            else:
+                # Try to find a nested dict that looks like a state dict
+                for v in ckpt.values():
+                    if isinstance(v, dict) and all(isinstance(x, torch.Tensor) for x in v.values()):
+                        ckpt_state_dict = v
+                        break
+    
+    if ckpt_state_dict is None:
+        print("Error: Could not find state_dict in checkpoint for verification.")
+        return False
+
+    # Check a few keys
+    match_count = 0
+    check_count = 0
+    
+    for key in ckpt_state_dict:
+        # Handle 'module.' prefix if present in checkpoint but not in model
+        model_key = key.replace("module.", "") if key.startswith("module.") else key
+        
+        if model_key in model_state:
+            check_count += 1
+            # Ensure tensors are on the same device for comparison
+            ckpt_param = ckpt_state_dict[key].to(model_state[model_key].device)
+            if torch.equal(model_state[model_key], ckpt_param):
+                match_count += 1
+            else:
+                print(f"Mismatch found in layer: {model_key}")
+    
+    if check_count > 0 and match_count == check_count:
+        print(f"Success: All {check_count} common layers match exactly.")
+        return True
+    elif check_count == 0:
+        print("Warning: No common keys found between model and checkpoint.")
+        # Debug: print some keys to help diagnose
+        print(f"Model keys sample: {list(model_state.keys())[:3]}")
+        if ckpt_state_dict:
+             print(f"Ckpt keys sample: {list(ckpt_state_dict.keys())[:3]}")
+        return False
+    else:
+        print(f"Failure: Only {match_count}/{check_count} layers match.")
+        return False
+        # Handle 'module.' prefix if present in checkpoint but not in model
+        model_key = key.replace("module.", "") if key.startswith("module.") else key
+        
+        if model_key in model_state:
+            check_count += 1
+            # Ensure tensors are on the same device for comparison
+            ckpt_param = ckpt_state_dict[key].to(model_state[model_key].device)
+            if torch.equal(model_state[model_key], ckpt_param):
+                match_count += 1
+            else:
+                print(f"Mismatch found in layer: {model_key}")
+    
+    if check_count > 0 and match_count == check_count:
+        print(f"Success: All {check_count} common layers match exactly.")
+        return True
+    elif check_count == 0:
+        print("Warning: No common keys found between model and checkpoint.")
+        # Debug: print some keys to help diagnose
+        print(f"Model keys sample: {list(model_state.keys())[:3]}")
+        print(f"Ckpt keys sample: {list(ckpt_state_dict.keys())[:3]}")
+        return False
+    else:
+        print(f"Failure: Only {match_count}/{check_count} layers match.")
+        return False
 
 
 if __name__ == "__main__":

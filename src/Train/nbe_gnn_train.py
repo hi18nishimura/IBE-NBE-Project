@@ -33,6 +33,7 @@ class TrainConfig:
     glob: str = "*.feather"
     alpha: float = 8.0
     global_normalize: bool = True
+    force_flag: bool = False
 
     # dataloader
     batch_size: int = 32
@@ -44,11 +45,18 @@ class TrainConfig:
     dropout: float = 0.0
     output_size: Optional[int] = None
     gnn_type: str = 'GCN'
+    multi_fully_layer: int = 1
 
     # optimization
     lr: float = 1e-3
     weight_decay: float = 0.0
     epochs: int = 300
+    
+    # loss weighting
+    loss_weight_alpha: float = 0.0
+    loss_weight_gamma: float = 2.0
+    loss_weight_time_beta: float = 10.0
+    loss_weight_disp: float = 0.0
 
     # lr/early stopping
     lr_patience: int = 5
@@ -56,6 +64,8 @@ class TrainConfig:
     min_lr: float = 1e-6
     max_lr_reductions: int = 3
     early_stop_patience: int = 10
+    lr_decay_start_epoch: int = 30
+    lr_decay_step_size: int = 10
 
     # misc
     save_dir: str = "outputs/gnn_train"
@@ -85,6 +95,9 @@ def collate_fn(batch):
     # Note: If we want to process the batch in parallel in the GNN, we need to construct a batched edge_index.
     edge_index = batch[0]["edge_index"]
     
+    if batch[0].get("force_tensor") is not None:
+        force_tensors = torch.stack([b["force_tensor"] for b in batch], dim=0)
+        return inputs, targets, edge_index, force_tensors
     return inputs, targets, edge_index
 
 
@@ -169,6 +182,8 @@ def run_training(cfg: TrainConfig) -> None:
             glob=cfg.glob,
             alpha=cfg.alpha,
             global_normalize=global_normalize,
+            liver_coord_file='/workspace/dataset/liver_model_info/liver_coordinates.csv',
+            force_flag=cfg.force_flag
         )
         val_ds = NbeGNNDataset(
             data_dir=cfg.val_dir,
@@ -177,6 +192,7 @@ def run_training(cfg: TrainConfig) -> None:
             glob=cfg.glob,
             alpha=cfg.alpha,
             global_normalize=global_normalize,
+            force_flag=cfg.force_flag
         )
 
         train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, num_workers=cfg.num_workers, persistent_workers=True, collate_fn=collate_fn)
@@ -190,6 +206,8 @@ def run_training(cfg: TrainConfig) -> None:
         sample_item = train_ds[0]
         # inputs: (19, N, F)
         input_size = sample_item["inputs"].shape[-1]
+        if cfg.force_flag:
+            input_size += 3
         num_nodes = sample_item["inputs"].shape[1]
         
         target_size = train_ds.target_feature_size
@@ -202,7 +220,8 @@ def run_training(cfg: TrainConfig) -> None:
             num_layers=cfg.num_layers, 
             dropout=cfg.dropout,
             gnn_type=cfg.gnn_type,
-            return_only_central=True
+            return_only_central=True,
+            multi_fully_layer=cfg.multi_fully_layer
         )
         model.to(device)
 
@@ -221,14 +240,17 @@ def run_training(cfg: TrainConfig) -> None:
                 model.load_state_dict(checkpoint["model_state"])
 
             # Reset optimizer and scheduler for the new phase
-            optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode="min",
-                factor=cfg.lr_factor,
-                patience=cfg.lr_patience,
-                min_lr=cfg.min_lr,
-            )
+            if load_ckpt is not None:
+                optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr*0.1, weight_decay=cfg.weight_decay)
+            else:
+                optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+            # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            #     optimizer,
+            #     mode="min",
+            #     factor=float(cfg.lr_factor),
+            #     patience=cfg.lr_patience,
+            #     min_lr=float(cfg.min_lr),
+            # )
             criterion = nn.MSELoss()
 
             best_val = float("inf")
@@ -237,16 +259,28 @@ def run_training(cfg: TrainConfig) -> None:
             best_ckpt_path = run_dir / save_name
 
             for epoch in range(1, cfg.epochs + 1):
+                # LR Decay Logic (Epoch based)
+                if epoch >= cfg.lr_decay_start_epoch and (epoch - cfg.lr_decay_start_epoch) % cfg.lr_decay_step_size == 0:
+                     for param_group in optimizer.param_groups:
+                        if param_group['lr'] > cfg.min_lr:
+                            param_group['lr'] *= cfg.lr_factor
+                            print(f"Decaying learning rate to {param_group['lr']}")
+
                 model.train()
                 train_losses = []
                 for batch in train_loader:
-                    xb, yb, edge_index = batch
+                    if cfg.force_flag:
+                        xb, yb, edge_index, force_tensor = batch
+                        force_tensor = force_tensor.to(device)
+                    else:
+                        xb, yb, edge_index = batch
                     xb = xb.to(device)
                     yb = yb.to(device)
                     edge_index = edge_index.to(device)
                     
                     batch_size = xb.shape[0]
                     seq_len = xb.shape[1]
+                    output_size = yb.shape[2]
                     
                     batched_edge_index = create_batched_edge_index(edge_index, batch_size, num_nodes)
                     
@@ -254,9 +288,42 @@ def run_training(cfg: TrainConfig) -> None:
                     
                     # Forward pass
                     # Pass (Batch, Seq, Nodes, Feats) directly to model
-                    outputs_central = model(xb, batched_edge_index)
+                    if cfg.force_flag:
+                        outputs_central = model(xb, batched_edge_index, force_tensor)
+                    else:
+                        outputs_central = model(xb, batched_edge_index)
                     
-                    loss = criterion(outputs_central, yb)
+                    loss_weight_alpha = getattr(cfg, "loss_weight_alpha", 0.0)
+                    loss_weight_gamma = getattr(cfg, "loss_weight_gamma", 1.0)
+                    loss_weight_time_beta = getattr(cfg, "loss_weight_time_beta", 0.0)
+                    loss_weight_disp = getattr(cfg, "loss_weight_disp", 0.0)
+
+                    weights = 1.0
+
+                    if loss_weight_alpha > 0.0:
+                        # W(Q) = 1 + alpha * |(Q - 0.5) / 0.4|^gamma
+                        diff = torch.abs((yb - 0.5) / 0.4)
+                        weights = weights * (1.0 + loss_weight_alpha * torch.pow(diff, loss_weight_gamma))
+                    
+                    if loss_weight_time_beta > 0.0:
+                        # W(t) = 1 + beta * (t / (T-1))
+                        seq_len = yb.shape[1]
+                        t_indices = torch.arange(seq_len, device=device, dtype=torch.float32)
+                        if seq_len > 1:
+                            t_norm = t_indices / (seq_len - 1)
+                        else:
+                            t_norm = torch.zeros_like(t_indices)
+                        time_weights = 1.0 + loss_weight_time_beta * t_norm
+                        weights = weights * time_weights.view(1, -1, 1)
+                    if output_size==9 and loss_weight_disp > 0.0:
+                        disp_weights = torch.tensor([loss_weight_disp,loss_weight_disp,loss_weight_disp,1,1,1,1,1,1], device=device)
+                        weights = weights * disp_weights.view(1,1,-1)
+
+                    if isinstance(weights, float) and weights == 1.0:
+                        loss = criterion(outputs_central, yb)
+                    else:
+                        loss = torch.mean(weights * (outputs_central - yb) ** 2)
+
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
                     optimizer.step()
@@ -269,7 +336,11 @@ def run_training(cfg: TrainConfig) -> None:
                 val_losses = []
                 with torch.no_grad():
                     for batch in val_loader:
-                        xb, yb, edge_index = batch
+                        if cfg.force_flag:
+                            xb, yb, edge_index, force_tensor = batch
+                            force_tensor = force_tensor.to(device)
+                        else:
+                            xb, yb, edge_index = batch
                         xb = xb.to(device)
                         yb = yb.to(device)
                         edge_index = edge_index.to(device)
@@ -279,10 +350,18 @@ def run_training(cfg: TrainConfig) -> None:
                         
                         batched_edge_index = create_batched_edge_index(edge_index, batch_size, num_nodes)
                         
-                        outputs_central = model(xb, batched_edge_index)
+                        if cfg.force_flag:
+                            outputs_central = model(xb, batched_edge_index, force_tensor)
+                        else:
+                            outputs_central = model(xb, batched_edge_index)
                         
                         min_dim = min(outputs_central.shape[-1], yb.shape[-1])
-                        loss = criterion(outputs_central[..., :min_dim], yb[..., :min_dim])
+                        
+                        yb_sliced = yb[..., :min_dim]
+                        out_sliced = outputs_central[..., :min_dim]
+                        
+                        loss = criterion(out_sliced, yb_sliced)
+                        
                         val_losses.append(loss.item())
 
                 val_loss = float(np.mean(val_losses)) if val_losses else 0.0
@@ -304,17 +383,17 @@ def run_training(cfg: TrainConfig) -> None:
                 else:
                     epochs_since_improve += 1
 
-                if epochs_since_improve >= cfg.lr_patience:
-                    prev_lr = optimizer.param_groups[0]["lr"]
-                    scheduler.step(val_loss)
-                    cur_lr = optimizer.param_groups[0]["lr"]
-                    if cur_lr < prev_lr - 1e-12:
-                        lr_reductions += 1
-                        epochs_since_improve = 0
+                # if epochs_since_improve >= cfg.lr_patience:
+                #     prev_lr = optimizer.param_groups[0]["lr"]
+                #     scheduler.step(val_loss)
+                #     cur_lr = optimizer.param_groups[0]["lr"]
+                #     if cur_lr < prev_lr - 1e-12:
+                #         lr_reductions += 1
+                #         epochs_since_improve = 0
 
-                if lr_reductions >= cfg.max_lr_reductions and epochs_since_improve >= cfg.early_stop_patience:
-                    print(f"Early stopping at epoch {epoch}: lr_reductions={lr_reductions}, epochs_since_improve={epochs_since_improve}")
-                    break
+                # if lr_reductions >= cfg.max_lr_reductions and epochs_since_improve >= cfg.early_stop_patience:
+                #     print(f"Early stopping at epoch {epoch}: lr_reductions={lr_reductions}, epochs_since_improve={epochs_since_improve}")
+                #     break
 
                 print(f"[{phase_name}] node={node_id} Epoch {epoch}/{cfg.epochs}  train={train_loss:.6f}  val={val_loss:.6f}  lr={optimizer.param_groups[0]['lr']:.6e}")
             
@@ -326,8 +405,8 @@ def run_training(cfg: TrainConfig) -> None:
         best_pretrain_ckpt = run_phase("pretrain", load_ckpt=None, save_name="best_pretrain.pth")
 
         # 2. Fine-tuning Phase
-        model.set_finetune(True)
-        run_phase("finetune", load_ckpt=best_pretrain_ckpt, save_name="best_finetune.pth")
+        # model.set_finetune(True)
+        # run_phase("finetune", load_ckpt=best_pretrain_ckpt, save_name="best_finetune.pth")
 
         writer.flush()
         writer.close()

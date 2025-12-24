@@ -4,35 +4,43 @@
 train_dir: /workspace/dataset/bin/toy_all_model/train
 val_dir: /workspace/dataset/bin/toy_all_model/valid
 node_id: 1
-global_normalize: False
+model_dir: null
+global_normalize: True
 
 preload: false
 glob: "*.feather"
-alpha: 8.0
+alpha: 1.0
+force_flag: False
 
 # Dataloader
-batch_size: 64
-num_workers: 1
+batch_size: 128
+num_workers: 2
 
 # Model
 hidden_size: 128
-num_layers: 1
+num_layers: 3
 dropout: 0.5
 output_size: null
 gnn_type: 'GAT' # 'GCN' or 'GAT'
+multi_fully_layer: 5
 
 # Optimization
 lr: 0.001
 weight_decay: 0.0
-epochs: 5
+epochs: 50
 
 # LR / early stopping
 lr_patience: 10
-lr_factor: 0.9
+lr_factor: 0.8
 min_lr: 1e-6
 max_lr_reductions: 10
 early_stop_patience: 20
-
+lr_decay_start_epoch: 30
+lr_decay_step_size: 10
+loss_weight_alpha: 0.0
+loss_weight_gamma: 0.0
+loss_weight_time_beta: 0.0
+loss_weight_disp: 0.0
 # Misc
 save_dir: NBE/GNN_GAT
 seed: 42
