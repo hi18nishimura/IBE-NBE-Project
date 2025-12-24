@@ -9,6 +9,8 @@ services:
     volumes:
       # ../ディレクトリをコンテナの/workspaceにマウント
       - ../:/workspace
+      # Fドライブのマウント（存在する場合）
+      - ${F_DRIVE_SOURCE}:/workspace/datastore
       # Jupyter設定の永続化用
       - jupyter-data:/root/.jupyter
       # - ${SSH_AUTH_SOCK}:${SSH_AUTH_SOCK}
