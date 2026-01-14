@@ -1,7 +1,7 @@
 # Hydra config for Dataset/pattern.py runner
 phase: train
 output_names:
-  train: toy_all_model/train
+  train: all_model/train
   valid: toy_all_model/valid
   test: toy_all_model/test
 
@@ -15,12 +15,13 @@ tumor:
   E: 3.415
   nu: 0.40
 max_disp: 30.0
-train_divisions: 6
+train_divisions: 4
 valid_count: 50
 test_count: 50
 max_nodes: null
 seed: 42
 plot_random: false
+target_nodes: 100
 
 
 hydra:

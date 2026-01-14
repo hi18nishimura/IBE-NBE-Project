@@ -1,21 +1,21 @@
-phase: test
-csv_dirs:
-  train: /workspace/dataset/marc_parse/toy_all_model/train/all_feature
-  valid: /workspace/dataset/marc_parse/toy_all_model/valid/all_feature
-  test: /workspace/dataset/marc_parse/toy_all_model/test/all_feature
-output_dirs:
-  train: /workspace/dataset/bin/toy_all_model/train
-  valid: /workspace/dataset/bin/toy_all_model/valid
-  test: /workspace/dataset/bin/toy_all_model/test
-max_value_research_flags:
-  train: true
-  valid: false
-  test: false
-csv_dir: ${csv_dirs.${phase}}
-output_dir: ${output_dirs.${phase}}
-glob: '*.csv'
-encoding: utf-8
-compression: null
-skip_existing: false
-feather_glob: '*.feather'
-max_value_research: ${max_value_research_flags.${phase}}
+phase: train
+output_names:
+  train: all_model/train
+  valid: toy_all_model/valid
+  test: toy_all_model/test
+output_name: ${output_names.${phase}}
+input: dataset/liver_model/liver.dat
+liver:
+  E: 0.683
+  nu: 0.49
+tumor:
+  E: 3.415
+  nu: 0.4
+max_disp: 30.0
+train_divisions: 6
+valid_count: 50
+test_count: 50
+max_nodes: null
+seed: 42
+plot_random: false
+target_nodes: 100
