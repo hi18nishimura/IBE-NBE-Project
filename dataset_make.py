@@ -315,8 +315,11 @@ def _pattern_hydra_entry(cfg: DictConfig) -> None:
 
 	plot_random = bool(cfg.get('plot_random', False))
 
+	target_nodes = cfg.get('target_nodes')
+	target_nodes_str = str(target_nodes) if target_nodes is not None else None
+
 	generate_dataset(
-		mode=str(cfg.mode),
+		mode=str(cfg.get('phase', 'train')),  # 'mode' might be used as 'phase' in yaml
 		output_name=str(cfg.output_name),
 		input_dat=input_dat,
 		liver_props=liver_props,
@@ -328,6 +331,7 @@ def _pattern_hydra_entry(cfg: DictConfig) -> None:
 		max_nodes=max_nodes,
 		seed=seed,
 		plot_random=plot_random,
+		target_nodes_str=target_nodes_str,
 	)
 
 

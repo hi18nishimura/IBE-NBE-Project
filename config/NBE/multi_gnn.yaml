@@ -1,0 +1,52 @@
+# Hydra configuration for Multi-Tower GNN training
+
+# Data settings
+train_dir: /workspace/dataset/bin/toy_all_model/train
+val_dir: /workspace/dataset/bin/toy_all_model/valid
+max_node: 140
+preload: false
+glob: "*.feather"
+alpha: 8.0
+global_normalize: True
+force_flag: False
+
+# Dataloader
+batch_size: 128
+num_workers: 0
+
+# Model parameters (shared across towers)
+hidden_size: 64
+num_layers: 2
+dropout: 0.0
+gnn_type: 'GAT'
+multi_fully_layer: 5
+return_only_central: True
+
+# Optimization
+lr: 1e-3
+weight_decay: 0.0
+epochs: 300
+
+# Loss weighting
+loss_weight_alpha: 0.0
+loss_weight_gamma: 2.0
+loss_weight_time_beta: 0.00
+loss_weight_disp: 0.0
+
+# LR / early stopping
+lr_patience: 5
+lr_factor: 0.5
+min_lr: 1e-6
+max_lr_reductions: 3
+early_stop_patience: 10
+lr_decay_start_epoch: 30
+lr_decay_step_size: 10
+
+# Misc
+save_dir: /workspace/NBE/gnn_multi_train
+seed: 42
+
+# Paths
+input_output_size_path: /workspace/dataset/liver_model_info/input_output_size.csv
+#liver_coord_file: /workspace/dataset/liver_model_info/liver_coordinates.csv
+liver_coord_file:

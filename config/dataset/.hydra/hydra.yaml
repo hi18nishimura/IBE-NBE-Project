@@ -112,14 +112,14 @@ hydra:
     hydra:
     - hydra.mode=RUN
     task:
-    - phase=test
+    - phase=train
   job:
     name: dataset_make
     chdir: null
-    override_dirname: phase=test
+    override_dirname: phase=train
     id: ???
     num: ???
-    config_name: convert_binary
+    config_name: pattern
     env_set: {}
     env_copy: []
     config:
