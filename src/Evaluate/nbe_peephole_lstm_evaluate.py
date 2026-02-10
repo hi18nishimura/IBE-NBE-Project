@@ -62,6 +62,9 @@ def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neigh
     
     print(f"Processing: {target_file_stem}")
 
+    # Force Node Info (Ground Truth Displacement)
+    force_info = all_nbe_dataset[1].get_force_node_info(target_idx)
+
     # 時刻1→2の推定
     all_outputs_list = []
     # 時刻1の情報を取得する
@@ -78,6 +81,17 @@ def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neigh
             outputs, (h,c) = all_nbe[key].predict_next(inputs)
             all_lstm_gates[key] = (h, c)
             all_nbe_outputs[key] = outputs.squeeze(0)  # バッチ次元の削除
+
+    # Overwrite Force Nodes with Ground Truth for Time 2 (index 1)
+    force_idx = 1
+    for fnid, fdisp in force_info.items():
+        if fnid in all_nbe_outputs:
+            if force_idx < len(fdisp):
+                # fdisp is NORMALIZED.
+                # Assuming all_nbe_outputs is also NORMALIZED (model output)
+                current_force_val = torch.tensor(fdisp[force_idx], device=device, dtype=torch.float32)
+                # Overwrite dx, dy, dz (first 3)
+                all_nbe_outputs[fnid][:3] = current_force_val[:3]
     
     # 全時刻の情報を保存する
     all_outputs_list.append(all_nbe_outputs.copy())
@@ -95,6 +109,15 @@ def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neigh
                 outputs, (h,c) = all_nbe[key].predict_next(inputs, all_lstm_gates[key])
                 all_lstm_gates[key] = (h, c)
                 all_nbe_outputs[key] = outputs.squeeze(0)  # バッチ次元の削除
+        
+        # Overwrite Force Nodes with Ground Truth
+        force_idx = time - 1
+        for fnid, fdisp in force_info.items():
+            if fnid in all_nbe_outputs:
+                if force_idx < len(fdisp):
+                    current_force_val = torch.tensor(fdisp[force_idx], device=device, dtype=torch.float32)
+                    all_nbe_outputs[fnid][:3] = current_force_val[:3]
+
         # 全時刻の情報を保存する
         all_outputs_list.append(all_nbe_outputs.copy())
         # NBEの出力を次の出力にする
@@ -137,44 +160,64 @@ def run_single_evaluation(target_idx, all_nbe_dataset, all_nbe_params, all_neigh
         # correct_df = pd.read_feather(all_nbe_dataset[1].files[target_idx])
         # 時刻１の情報を結合する（現在は時刻１の情報に正解データを使っているので誤差はない）
         time1_correct_df = correct_df[correct_df['time']==1]
-        result_df = pd.concat([time1_correct_df[['time','node_id']+list(all_nbe_dataset[1].columns)], result_df], axis=0)
-        result_df[['x','y','z']] = 0.0
-        result_df.loc[result_df['time']==1, ['x','y','z']] = time1_correct_df[['x','y','z']].values
+        
+        # Create time 1 dataframe with same columns
+        time1_df = time1_correct_df[['time', 'node_id'] + list(all_nbe_dataset[1].columns)].copy()
+        
+        # Concatenate
+        result_df = pd.concat([time1_df, result_df], axis=0)
+        result_df = result_df.sort_values(['node_id', 'time']).reset_index(drop=True)
+
+        # Set initial positions (time 1) from correct_df
+        initial_df = time1_correct_df[['node_id', 'x', 'y', 'z']].rename(columns={'x':'init_x', 'y':'init_y', 'z':'init_z'})
 
         # node_id ごとにグループ化して累積和を計算
         result_df['cum_dx'] = result_df.groupby('node_id')['dx'].cumsum()
         result_df['cum_dy'] = result_df.groupby('node_id')['dy'].cumsum()
         result_df['cum_dz'] = result_df.groupby('node_id')['dz'].cumsum()
+        
+        result_df = pd.merge(result_df, initial_df, on='node_id', how='left')
 
-        # 2. 初期座標の取得と適用
-        # 時刻 1 の 'x', 'y', 'z' の値を、node_id ごとに全行に適用できるように抽出
-        initial_x = result_df.groupby('node_id')['x'].transform('first')
-        initial_y = result_df.groupby('node_id')['y'].transform('first')
-        initial_z = result_df.groupby('node_id')['z'].transform('first')
-
-        # 3. 最終座標の更新
-        # 初期座標 + 累積変位
-        result_df['x'] = initial_x + result_df['cum_dx']
-        result_df['y'] = initial_y + result_df['cum_dy']
-        result_df['z'] = initial_z + result_df['cum_dz']
+        # 3. 最終座標の更新 (nbe_gnn_evaluate2.pyの実装に合わせる)
+        # 初期座標 + 累積変位 - 最初の変位(time=1の変位)
+        # これはtime=1の座標が初期配置であることを保証するため
+        result_df['x'] = result_df['init_x'] + result_df['cum_dx'] - result_df.groupby('node_id')['dx'].transform('first')
+        result_df['y'] = result_df['init_y'] + result_df['cum_dy'] - result_df.groupby('node_id')['dy'].transform('first')
+        result_df['z'] = result_df['init_z'] + result_df['cum_dz'] - result_df.groupby('node_id')['dz'].transform('first')
 
         # 不要な列の削除
-        result_df = result_df.drop(columns=['cum_dx', 'cum_dy', 'cum_dz'])
+        result_df = result_df.drop(columns=['cum_dx', 'cum_dy', 'cum_dz', 'init_x', 'init_y', 'init_z'])
         result_df = result_df.reset_index(drop=True)
 
         # x,y,z,Sxx,Syy,Szz,Sxy,Syz,Szxの誤差の計算
-        merged_df = pd.merge(result_df, correct_df[['time', 'node_id', 'x', 'y', 'z', 'dx', 'dy', 'dz', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx']], 
-                             on=['time', 'node_id'], suffixes=('', '_correct'))
+        # Process Ground Truth from correct_df
+        gt_df = correct_df.copy()
+        gt_df_renamed = gt_df.add_suffix('_correct')
+        gt_df_renamed = gt_df_renamed.rename(columns={'time_correct': 'time', 'node_id_correct': 'node_id'})
         
-        for col in ['x', 'y', 'z', 'dx', 'dy', 'dz', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx']:
-            merged_df[f'{col}_error'] = abs(merged_df[col] - merged_df[f'{col}_correct'])
+        merged_df = pd.merge(result_df, gt_df_renamed, on=['time', 'node_id'], how='left')
+        
+        # Calculate errors
+        error_cols = ['x', 'y', 'z', 'dx', 'dy', 'dz', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx']
+        for col in error_cols:
+            if col in merged_df.columns and f'{col}_correct' in merged_df.columns:
+                merged_df[f'{col}_error'] = (merged_df[col] - merged_df[f'{col}_correct']).abs()
 
-        raw_cols = [f"{col}_raw" for col in all_nbe_dataset[1].columns]
-        cols_to_keep = ['time', 'node_id'] + \
-                       ['x', 'y', 'z', 'dx', 'dy', 'dz', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx'] + \
-                       [f'{col}_error' for col in ['x', 'y', 'z', 'dx', 'dy', 'dz', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx']] + \
-                       raw_cols
+        # Select columns to save
+        cols_to_keep = ['time', 'node_id']
+        for col in error_cols:
+            if col in merged_df.columns:
+                cols_to_keep.append(col)
+            if f'{col}_correct' in merged_df.columns:
+                cols_to_keep.append(f'{col}_correct')
+            if f'{col}_error' in merged_df.columns:
+                cols_to_keep.append(f'{col}_error')
         
+        # Add raw columns if they exist in merged_df
+        raw_cols = [f"{col}_raw" for col in all_nbe_dataset[1].columns]
+        if raw_cols:
+             cols_to_keep.extend([c for c in raw_cols if c in merged_df.columns])
+             
         final_df = merged_df[cols_to_keep]
 
         # 結果の保存
