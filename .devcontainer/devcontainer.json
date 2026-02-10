@@ -3,7 +3,7 @@
     "dockerComposeFile": "docker-compose.yml",
     "service": "research-env",
     "workspaceFolder": "/workspace",
-    "initializeCommand": "cmd /c \"if not exist .devcontainer\\empty_mount mkdir .devcontainer\\empty_mount && if exist F:\\ (echo F_DRIVE_SOURCE=F:/> .devcontainer\\.env) else (echo F_DRIVE_SOURCE=./empty_mount> .devcontainer\\.env)\"",
+    "initializeCommand": "cmd /c .devcontainer\\setup-env.cmd",
     
     // VS Code カスタマイゼーション
     "customizations": {

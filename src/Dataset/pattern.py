@@ -176,10 +176,12 @@ def format_marc_list(ids: List[int]) -> List[str]:
 			tokens.append(f"{s} TO {e}")
 			
 	lines = []
-	current_line = " " # インデント
+	current_line = "" # インデントなし（空文字）に変更
 	
 	for i, token in enumerate(tokens):
-		separator = "" if len(current_line) <= 1 else " "
+		# 修正: current_line が空の場合のみ separator を空にする
+		separator = "" if len(current_line) == 0 else " "
+		
 		# 行が長くなりすぎないように制御 (76文字目安)
 		if len(current_line) + len(separator) + len(token) > 76:
 			current_line += " C"
@@ -259,8 +261,8 @@ def edit_liver_dat(
 			start_row = -1
 			for idx, ln in enumerate(lines):
 				if keyword in ln:
-					# データ行: ID行(0), 物性(1), 温度(2) -> 要素リストは(3)以降
-					start_row = idx + 3
+					# データ行: ID行(idx+1), 物性(idx+2), データ(idx+3) -> 要素リストは(idx+4)以降
+					start_row = idx + 4
 					break
 			if start_row == -1:
 				return (-1, -1)
@@ -279,12 +281,12 @@ def edit_liver_dat(
 			return (start_row, end_row)
 
 		t_start, t_end = find_element_list_range('"tumor_material"')
-		l_start, l_end = find_element_list_range('"liver_material"')
 		
 		# Ranges to replace: list of (start, end, formatted_lines)
 		replacements = []
 		if t_start != -1: replacements.append({'start': t_start, 'end': t_end, 'content': tumor_list_str})
-		if l_start != -1: replacements.append({'start': l_start, 'end': l_end, 'content': liver_list_str})
+		# liver_material の要素リストは書き換えずにそのまま維持する
+		# if l_start != -1: replacements.append({'start': l_start, 'end': l_end, 'content': liver_list_str})
 		
 		# sort by start index asc
 		replacements.sort(key=lambda x: x['start'])
@@ -412,6 +414,10 @@ def generate_dataset(
 	target_nodes_str: str | None = None,
 ) -> None:
 	"""モード別の変位を組み合わせて liver.dat を大量生成するメイン処理"""
+
+	if target_nodes_str:
+		safe_suffix = target_nodes_str.replace(',', '_').replace(' ', '')
+		output_name = f"{output_name}/{safe_suffix}"
 
 	output_dir = create_run_directory(output_name)
 	nodes = available_force_nodes()

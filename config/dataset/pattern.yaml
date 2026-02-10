@@ -1,9 +1,9 @@
 # Hydra config for Dataset/pattern.py runner
 phase: train
 output_names:
-  train: all_model/train
-  valid: toy_all_model/valid
-  test: toy_all_model/test
+  train: /workspace/datastore/liver_deform_estimation/all_model/marc_pattern/train
+  valid: /workspace/datastore/liver_deform_estimation/all_model/marc_pattern/valid
+  test: /workspace/datastore/liver_deform_estimation/all_model/marc_pattern/test
 
 output_name: ${output_names.${phase}}
 

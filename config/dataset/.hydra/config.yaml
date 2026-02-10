@@ -1,8 +1,8 @@
 phase: train
 output_names:
-  train: all_model/train
-  valid: toy_all_model/valid
-  test: toy_all_model/test
+  train: /workspace/datastore/liver_deform_estimation/all_model/marc_pattern/train
+  valid: /workspace/datastore/liver_deform_estimation/all_model/marc_pattern/valid
+  test: /workspace/datastore/liver_deform_estimation/all_model/marc_pattern/test
 output_name: ${output_names.${phase}}
 input: dataset/liver_model/liver.dat
 liver:
@@ -12,7 +12,7 @@ tumor:
   E: 3.415
   nu: 0.4
 max_disp: 30.0
-train_divisions: 6
+train_divisions: 4
 valid_count: 50
 test_count: 50
 max_nodes: null

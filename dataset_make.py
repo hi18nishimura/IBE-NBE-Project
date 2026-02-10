@@ -20,6 +20,31 @@ import hydra
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
 
+# 外部節点のID
+FORCE_NODE_CANDIDATES = [
+	1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+	22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33,
+	35, 36, 38,
+	45, 46, 49,
+	51, 52, 53, 54, 55,
+	58, 59, 60, 61,
+	63, 64,
+	66, 67, 68,
+	71,
+	74, 75, 76, 77,
+	79, 80,
+	83, 85, 86,
+	88, 89, 90, 91, 92,
+	95, 96, 97,
+	99, 100, 101,
+	104, 105,
+	108, 109, 110, 111,
+	114, 115, 116,
+	118, 119, 120, 121, 122,
+	124, 125,
+	127, 128, 129, 130, 131, 132, 133,
+	135, 136, 137, 138, 139, 140,
+]
 
 # Dataset.* モジュールをインポートできるように src/ ディレクトリを sys.path へ追加
 REPO_ROOT = Path(__file__).resolve().parent
@@ -315,24 +340,28 @@ def _pattern_hydra_entry(cfg: DictConfig) -> None:
 
 	plot_random = bool(cfg.get('plot_random', False))
 
-	target_nodes = cfg.get('target_nodes')
-	target_nodes_str = str(target_nodes) if target_nodes is not None else None
+	# target_nodes = cfg.get('target_nodes')
+	# target_nodes_str = str(target_nodes) if target_nodes is not None else None
 
-	generate_dataset(
-		mode=str(cfg.get('phase', 'train')),  # 'mode' might be used as 'phase' in yaml
-		output_name=str(cfg.output_name),
-		input_dat=input_dat,
-		liver_props=liver_props,
-		tumor_props=tumor_props,
-		max_disp=float(cfg.max_disp),
-		train_divisions=int(cfg.train_divisions),
-		valid_count=int(cfg.valid_count),
-		test_count=int(cfg.test_count),
-		max_nodes=max_nodes,
-		seed=seed,
-		plot_random=plot_random,
-		target_nodes_str=target_nodes_str,
-	)
+	for node_id in FORCE_NODE_CANDIDATES:
+		target_nodes_str = str(node_id)
+		print(f"[hydra] Generating dataset for target_nodes={target_nodes_str}")
+
+		generate_dataset(
+			mode=str(cfg.get('phase', 'train')),  # 'mode' might be used as 'phase' in yaml
+			output_name=str(cfg.output_name),
+			input_dat=input_dat,
+			liver_props=liver_props,
+			tumor_props=tumor_props,
+			max_disp=float(cfg.max_disp),
+			train_divisions=int(cfg.train_divisions),
+			valid_count=int(cfg.valid_count),
+			test_count=int(cfg.test_count),
+			max_nodes=max_nodes,
+			seed=seed,
+			plot_random=plot_random,
+			target_nodes_str=target_nodes_str,
+		)
 
 
 def run_pattern_hydra(overrides: List[str]) -> None:

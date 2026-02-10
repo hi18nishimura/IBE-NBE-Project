@@ -644,17 +644,16 @@ COORDINATES
   140,   337.995,   183.411,   201.183,
 ISOTROPIC
 
+$Isotropic from material named "liver_material"
+    1,          ,          ,    0,    0,    0,    0,liver_material,
+  0.683000,  0.400000,        0.,        0.,        0.,        0.,        0.,        0.,
+    0,    0,    0,    0,    0,    0,
+1 TO 465
 $Isotropic from material named "tumor_material"
-    1,          ,          ,    0,    0,    0,    0,tumor_material,
+    2,          ,          ,    0,    0,    0,    0,tumor_material,
    3.41500,  0.400000,        0.,        0.,        0.,        0.,        0.,        0.,
     0,    0,    0,    0,    0,    0,
 39 77 294 365 369 375 422
-$Isotropic from material named "liver_material"
-    2,          ,          ,    0,    0,    0,    0,liver_material,
-  0.683000,  0.400000,        0.,        0.,        0.,        0.,        0.,        0.,
-    0,    0,    0,    0,    0,    0,
-1 TO 38 40 TO 76 78 TO 293 295 TO 364 366 TO 368 370 TO 374 376 TO 421 423 424 C
- AND 425 TO 465
 FIXED DISP
 
     1,    0,    0,    0,    0,    0,liver_fixed                     

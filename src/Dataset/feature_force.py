@@ -130,6 +130,8 @@ def build_force_dataframe(
 					"dz": dz,
 				}
 			)
+		print(rows)
+		exit()
 
 	if not rows:
 		raise ValueError(

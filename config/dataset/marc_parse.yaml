@@ -3,13 +3,15 @@
 
 phase: train
 input_dirs:
-  train: /workspace/dataset/marc/toy_all_model/train
-  valid: /workspace/dataset/marc/toy_all_model/valid
-  test: /workspace/dataset/marc/toy_all_model/test
+  train: /f_drive/liver_deform_estimation/hirose_dataset/marc/train
+  # train: /workspace/dataset/marc/toy_all_model/train
+  # valid: /workspace/dataset/marc/toy_all_model/valid
+  # test: /workspace/dataset/marc/toy_all_model/test
 output_dirs:
-  train: /workspace/dataset/marc_parse/toy_all_model/train
-  valid: /workspace/dataset/marc_parse/toy_all_model/valid
-  test: /workspace/dataset/marc_parse/toy_all_model/test
+  train: /f_drive/liver_deform_estimation/hirose_dataset/marc_parse/train
+  # train: /workspace/dataset/marc_parse/toy_all_model/train
+  # valid: /workspace/dataset/marc_parse/toy_all_model/valid
+  # test: /workspace/dataset/marc_parse/toy_all_model/test
 
 input_dir: ${input_dirs.${phase}}
 output_dir: ${output_dirs.${phase}}
