@@ -1,0 +1,35 @@
+# @package _global_
+train_dir: "dataset/bin/toy_all_model/train"
+val_dir: "dataset/bin/toy_all_model/valid"
+load_model_dir: "NBE/gated_mlp_train"
+save_dir: "NBE/recursive_gated_mlp_train"
+
+node_connection_file: "dataset/liver_model_info/node_connections.csv"
+fixed_nodes_file: "dataset/liver_model_info/fixed_nodes.csv"
+summary_overall_max: "dataset/bin/toy_all_model/train/summary_overall_max_values.csv"
+
+# Training params
+batch_size: 32
+num_workers: 4
+lr: 1e-4
+epochs: 100
+seq_len: 19
+teacher_forcing_ratio: 0.2
+
+# LR Decay
+lr_decay_start_epoch: 30
+lr_decay_step_size: 10
+lr_factor: 0.5
+
+
+# Dataset params
+glob: "*.feather"
+alpha: 8.0
+global_normalize: true
+
+# Debug: limit nodes
+node_min: 1
+node_max: 140
+
+seed: 42
+weight_decay: 0.0

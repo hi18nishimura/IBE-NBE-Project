@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Iterable, List, Optional, Dict, Any
 
@@ -10,7 +9,27 @@ import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+
 DEFAULT_COLUMNS = ["dx", "dy", "dz", "Sxx", "Syy", "Szz", "Sxy", "Syz", "Szx"]
+
+
+def oka_normalize_series(series: pd.Series, pwidth: float, alpha: float) -> pd.Series:
+    """Oka normalization for a pandas Series.
+
+    p_out = sign(p_in) * (0.4 / pwidth^(1/alpha)) * |p_in|^(1/alpha) + 0.5
+    """
+    if alpha <= 0:
+        raise ValueError("alpha must be > 0")
+    vals = series.to_numpy(dtype=float)
+    signs = np.sign(vals)
+    absvals = np.abs(vals)
+    if pwidth == 0 or np.isnan(pwidth):
+        return pd.Series(np.full_like(vals, 0.5, dtype=float), index=series.index)
+    factor = 0.4 / (pwidth ** (1.0 / alpha))
+    with np.errstate(invalid='ignore'):
+        normed = signs * factor * (absvals ** (1.0 / alpha)) + 0.5
+    return pd.Series(normed, index=series.index)
+
 
 def oka_normalize_array(vals: np.ndarray, pwidths: np.ndarray, alpha: float) -> np.ndarray:
     """Vectorized Oka normalization for numpy arrays.
@@ -87,7 +106,7 @@ def oka_normalize_dataframe_fast(df: pd.DataFrame, pwidths: np.ndarray, alpha: f
 
     return pd.DataFrame(result_vals, index=df.index, columns=df.columns)
 
-class NbeGNNDataset(Dataset):
+class NbeAttentionDataset(Dataset):
     """PyTorch Dataset for nodal time-series stored as .feather files.
 
     Behavior (implemented according to the header comments):
@@ -115,67 +134,12 @@ class NbeGNNDataset(Dataset):
         summary_overall_max: Optional[str | Path] = None,
         node_connection_file: Optional[str | Path] = None,
         fixed_nodes_file: Optional[str | Path] = None,
-        liver_coord_file: Optional[str | Path] = None,
         global_normalize: bool = True,
-        force_flag: bool = False,
     ) -> None:
-        self.force_flag = force_flag
         self.data_dir = Path(data_dir)
         if not self.data_dir.exists():
             raise NotADirectoryError(f"data_dir not found: {self.data_dir}")
         self.files = sorted(self.data_dir.glob(glob))
-        if liver_coord_file is not None:
-            #　liver_coodinates.csvを読み込む
-            liver_coord_path = Path(liver_coord_file)
-            if liver_coord_path.exists():
-                df_coords = pd.read_csv(liver_coord_path)
-                # node_idの３次元座標値（x,y,z）を取得する
-                target_row = df_coords[df_coords['node_id'] == node_id]
-                if not target_row.empty:
-                    tx = target_row.iloc[0]['x']
-                    ty = target_row.iloc[0]['y']
-                    tz = target_row.iloc[0]['z']
-                    
-                    # node_idの座標値との距離を計算して、target_dispという新しい列を作る。node_id自身の情報は0にする
-                    df_coords['target_disp'] = np.sqrt(
-                        (df_coords['x'] - tx)**2 + 
-                        (df_coords['y'] - ty)**2 + 
-                        (df_coords['z'] - tz)**2
-                    )
-                    
-                    # target_dispとの距離をソートして、上位30%のnode_idを整数のリスト(disp_sort_node_list)として保存する
-                    df_coords = df_coords.sort_values('target_disp')
-                    
-                    # Try increasing rates until files are found
-                    found_files = False
-                    pattern = re.compile(r"node(\d+)")
-                    
-                    #for use_rate in [0.1, 0.2, 0.3, 0.4, 0.5, 1.0]:
-                    for use_rate in [ 0.3, 0.4, 0.5, 1.0]:
-                        top_n = int(len(df_coords) * use_rate)
-                        if top_n < 1: top_n = 1
-                        
-                        disp_sort_node_list = set(df_coords.iloc[:top_n]['node_id'].tolist())
-                        
-                        filtered_files = []
-                        for f in self.files:
-                            match = pattern.search(f.name)
-                            if match:
-                                file_node_id = int(match.group(1))
-                                if file_node_id in disp_sort_node_list:
-                                    filtered_files.append(f)
-                        
-                        if filtered_files:
-                            self.files = filtered_files
-                            print(f"Node {node_id}: Filtered files using rate {use_rate} (Top {top_n} neighbors). Found {len(self.files)} files.")
-                            found_files = True
-                            break
-                    
-                    if not found_files:
-                        print(f"Warning: No files remained after filtering by liver coordinates for node {node_id}")
-            else:
-                print(f"Warning: liver_coord_file not found at {liver_coord_path}")
-
         if not self.files:
             raise FileNotFoundError(f"No files found in {self.data_dir} matching {glob}")
         self.node_id = int(node_id)
@@ -206,6 +170,7 @@ class NbeGNNDataset(Dataset):
 
         self.node_connections = self._load_node_connections(Path(node_connection_file)) if node_connection_file else {}
         self.fixed_nodes = self._load_fixed_nodes(Path(fixed_nodes_file)) if fixed_nodes_file else {}
+        self.is_center_node_fixed = self.fixed_nodes.get(self.node_id, False)
 
         self.neighbors = self.node_connections.get(self.node_id, [])
 
@@ -220,6 +185,7 @@ class NbeGNNDataset(Dataset):
             else:
                 summary_overall_max = "/workspace/dataset/bin/toy_all_model/train/summary_per_node_max_values.csv"
         self.summary_overall_max = summary_overall_max
+        #print(f"Using summary_overall_max: {self.summary_overall_max}")
         self.max_map: Dict[str, float] = {}
         if self.global_normalize:
             if self.summary_overall_max and Path(self.summary_overall_max).exists():
@@ -242,20 +208,33 @@ class NbeGNNDataset(Dataset):
         # precompute per-node feature counts (accounting for fixed nodes skipping dx/dy/dz)
         self.node_feature_counts: Dict[int, int] = {}
         for nid in self.node_order:
-            self.node_feature_counts[nid] = 9
-       
-        if self.fixed_nodes[node_id]:
-            self.target_feature_size = 6
-        else:
-            self.target_feature_size = 9
+            is_fixed = self.fixed_nodes.get(nid, False)
+            count = 0
+            for col in self.columns:
+                if is_fixed and col in ("dx", "dy", "dz"):
+                    continue
+                count += 1
+            self.node_feature_counts[nid] = count
+            if nid==self.node_id:
+                self.target_feature_size = count
+
+        # precompute slices (start inclusive, end exclusive) within the per-timestep concatenated vector
+        self.input_slices: Dict[int, tuple[int, int]] = {}
+        offset = 0
+        for nid in self.node_order:
+            cnt = self.node_feature_counts.get(nid, 0)
+            self.input_slices[nid] = (offset, offset + cnt)
+            offset += cnt
+        self.input_feature_size: int = offset
 
         # 抽出するインデックスの情報を取得する
         self.extract_dataframe_idx,self.extract_fixed_idx = self._build_extraction_plan(pd.read_feather(self.files[0]))
         
-        # 注目節点と隣接節点の情報を抽出する
-        self.edge_index = self.get_edge_index(Path(node_connection_file))
-
-
+        #print(self.node_order)
+        # preload option: if requested, process each file now into tensors and
+        # store a list of processed dicts {'inputs','targets'} in self._data_cache.
+        # This makes __getitem__ return cached tensors immediately (fast), at the
+        # cost of increased memory usage during preload. Show progress with tqdm.
         self._data_cache: Optional[List[Dict[str, torch.Tensor]]] = None
 
         if self.preload:
@@ -266,11 +245,10 @@ class NbeGNNDataset(Dataset):
                     node_tables = self._extract_node_tables(df)
                     processed = self._transform_input_output(node_tables)
                     processed_list.append(processed)
-                except Exception as e:
+                except Exception:
                     # if a single file fails, append a placeholder to keep indexing
                     # stable and allow runtime errors to surface later in training.
-                    # processed_list.append({"inputs": None, "targets": None})
-                    raise e
+                    processed_list.append({"inputs": None, "targets": None})
             self._data_cache = processed_list
 
         # NOTE: extraction from feather files is intentionally left to the
@@ -327,18 +305,11 @@ class NbeGNNDataset(Dataset):
 
         # otherwise, read raw dataframe and process on-demand
         df = self._read_file(idx)
-        node_tables = self._extract_node_tables(df)
-        processed = self._transform_input_output(node_tables)
-        if self.force_flag:
-            force_node_id = df['force_node_id'].loc[0]
-            force_data = df[df['node_id']==force_node_id][['dx','dy','dz']].values[0]
-            force_tensor = torch.tensor(force_data,dtype=torch.float32)
-            processed['force_tensor'] = force_tensor
-            return processed
-        else:
-            return processed
+        node_dict = self._extract_node_tables(df)
+        processed = self._transform_input_output(node_dict)
+        return processed
 
-    def _transform_input_output(self, node_tables) -> Dict[str, torch.Tensor]:
+    def _transform_input_output(self, node_dict) -> Dict[str, torch.Tensor]:
         """Process node_tables into normalized input/target tensors.
 
         This implementation follows the approach in `nbe_dataset.py`:
@@ -348,15 +319,57 @@ class NbeGNNDataset(Dataset):
           and vectorized Oka normalization
         - targets are central node values at t+1 (same masked column ordering)
         """
-        inputs = torch.tensor(node_tables[:19,:,:],dtype=torch.float32)
-        # Target is the central node (index 0) at t+1
-        if self.fixed_nodes[self.node_id]:
-            targets = torch.tensor(node_tables[1:20, 0,3:],dtype=torch.float32)
+        u_inputs = torch.tensor(node_dict["u"][:19,:],dtype=torch.float32)
+        sigma_inputs = torch.tensor(node_dict["sigma"][:19,:],dtype=torch.float32)
+        tau_inputs = torch.tensor(node_dict["tau"][:19,:],dtype=torch.float32)
+        inputs = {"u": u_inputs, "sigma": sigma_inputs, "tau": tau_inputs}
+
+
+        if not self.is_center_node_fixed:
+            u_targets = torch.tensor(node_dict["u"][1:20,0,:],dtype=torch.float32)
+            
+        sigma_targets = torch.tensor(node_dict["sigma"][1:20,0,:],dtype=torch.float32)
+        tau_targets = torch.tensor(node_dict["tau"][1:20,0,:],dtype=torch.float32)
+        if self.is_center_node_fixed:
+            merge_targets = torch.cat([sigma_targets,tau_targets], dim=1)
+            targets = {"sigma": sigma_targets, "tau": tau_targets, "merge": merge_targets}
         else:
-            targets = torch.tensor(node_tables[1:20, 0, :],dtype=torch.float32)
+            merge_targets = torch.cat([u_targets, sigma_targets, tau_targets], dim=1)
+            targets = {"u": u_targets, "sigma": sigma_targets, "tau": tau_targets, "merge": merge_targets}
 
-        return {"inputs": inputs, "targets": targets, "edge_index": self.edge_index}
+        return {"inputs": inputs, "targets": targets}
 
+    def _extract_node_tables(self, df: pd.DataFrame):
+        """Placeholder extractor.
+
+        The implementation that extracted rows/columns from feather files was
+        removed per user request so that the user can provide their own
+        extraction logic. Implement this method to return a mapping
+        {node_id: DataFrame} where each DataFrame has rows indexed by time
+        (1-based ints) and columns for the features in ``self.columns``.
+        """
+        times = len(df['time'].unique())
+        df = df[self.columns]
+        df = df.loc[self.extract_dataframe_idx]
+        # 正規化
+        df = oka_normalize_dataframe_fast(df, self.pwidth_array_broadcasted, self.alpha)
+        # 固定節点のdx,dy,dzをNaNにする
+        df.loc[self.extract_fixed_idx, ['dx', 'dy', 'dz']] = np.nan
+
+        # 垂直応力のデータフレーム
+        df_sigma = df[['Sxx', 'Syy', 'Szz']].values
+        sigma_arr = df_sigma.reshape(times, -1, 3)
+        # せん断応力のデータフレーム
+        df_tau = df[['Sxy', 'Syz', 'Szx']].values
+        tau_arr = df_tau.reshape(times, -1, 3)
+        # 変位のデータフレーム
+        df_u = df[['dx', 'dy', 'dz']].values
+        # nanを削除
+        df_u = df_u[~np.isnan(df_u).any(axis=1)]
+        u_arr = df_u.reshape(times, -1, 3)
+
+        return {"u": u_arr,"sigma": sigma_arr,"tau": tau_arr}
+    
     def get_force_node_info(self, idx: int) -> Dict[int, np.ndarray]:
         """
         Get ground truth displacement (dx, dy, dz) for the forced node(s).
@@ -389,73 +402,3 @@ class NbeGNNDataset(Dataset):
             info[fid] = disp
             
         return info
-
-    def _extract_node_tables(self, df: pd.DataFrame):
-        """Placeholder extractor.
-
-        The implementation that extracted rows/columns from feather files was
-        removed per user request so that the user can provide their own
-        extraction logic. Implement this method to return a mapping
-        {node_id: DataFrame} where each DataFrame has rows indexed by time
-        (1-based ints) and columns for the features in ``self.columns``.
-        """
-        times = len(df['time'].unique())
-        df = df[self.columns]
-        df = df.loc[self.extract_dataframe_idx]
-        # 正規化
-        df = oka_normalize_dataframe_fast(df, self.pwidth_array_broadcasted, self.alpha)
-        
-        data_arr = df.values
-
-        arr_reshaped = data_arr.reshape(times, len(self.node_order), len(self.columns))
-        
-        return arr_reshaped
-
-    def get_edge_index(self, path: Path) -> torch.Tensor:
-        """Extract edge_index tensor from node_connections.csv file.
-
-        Returns:
-            edge_index: Tensor of shape (2, num_edges) representing graph connectivity.
-        """
-        if not path.exists():
-            raise FileNotFoundError(f"node_connections.csv not found: {path}")
-
-        # 1. Load all connections from CSV
-        all_connections = self._load_node_connections(path)
-        
-        # 2. Filter nodes: only include the central node and its direct neighbors
-        # self.node_order contains [central_node, neighbor_1, neighbor_2, ...]
-        relevant_nodes = set(self.node_order)
-        
-        # 3. Map real node IDs to local indices (0 to N-1)
-        # Local index corresponds to the position in self.node_order
-        node_to_idx = {node_id: i for i, node_id in enumerate(self.node_order)}
-        
-        src_list = []
-        dst_list = []
-
-        # 4. Build edges
-        # Iterate through each node in our subgraph (central node + neighbors)
-        for u_real in self.node_order:
-            if u_real not in all_connections:
-                continue
-                
-            # Get neighbors of u from the CSV data
-            neighbors = all_connections[u_real]
-            
-            for v_real in neighbors:
-                # Only add edge if the neighbor v is also part of our subgraph
-                if v_real in relevant_nodes:
-                    u_idx = node_to_idx[u_real]
-                    v_idx = node_to_idx[v_real]
-                    
-                    src_list.append(u_idx)
-                    dst_list.append(v_idx)
-
-        if not src_list:
-            return torch.empty((2, 0), dtype=torch.long)
-
-        # 5. Create tensor
-        edge_index = torch.tensor([src_list, dst_list], dtype=torch.long)
-        
-        return edge_index

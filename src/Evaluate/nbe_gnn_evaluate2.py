@@ -169,6 +169,7 @@ def load_models(model_dir, dataset_dir):
         dropout = cfg.get('dropout', 0.5)
         gnn_type = cfg.get('gnn_type', 'GAT')
         finetune = cfg.get('finetune', False)
+        multi_fully_layer = cfg.get('multi_fully_layer', 1)
         
         model = NbeGNN(
             input_size=input_size,
@@ -177,7 +178,8 @@ def load_models(model_dir, dataset_dir):
             num_layers=num_layers,
             dropout=dropout,
             gnn_type=gnn_type,
-            finetune=finetune
+            finetune=finetune,
+            multi_fully_layer=multi_fully_layer
         )
         
         if 'model_state' in checkpoint:
@@ -286,6 +288,9 @@ def run_evaluation(models, node_params, neighbor_map, datasets, output_dir):
         for k, v in all_edge_indices.items():
             all_edge_indices[k] = v.to(device)
             
+        # Get Force Node Info (Ground Truth Displacement)
+        force_info = datasets[first_node].get_force_node_info(idx)
+        
         all_outputs_list = []
         
         # Determine number of steps
@@ -331,19 +336,39 @@ def run_evaluation(models, node_params, neighbor_map, datasets, output_dir):
                     phys_val = oka_denormalize(pred, max_vals, alpha)
                     all_physical_outputs[node_id] = phys_val
             
+            # Ovewrite Force Nodes with Ground Truth
+            # t=0 predicts T=2. force_info includes T=1, T=2... So we want index t+1 for T=2.
+            force_idx = t + 1
+            for fnid, fdisp in force_info.items():
+                if fnid in all_physical_outputs:
+                   if force_idx < len(fdisp):
+                       # fdisp is NORMALIZED. We need PHYSICAL values for all_physical_outputs.
+                       norm_gt_disp = torch.tensor(fdisp[force_idx], device=device, dtype=torch.float32)
+                       
+                       # Denormalize to match all_physical_outputs space
+                       params = node_params[fnid]
+                       alpha = params["alpha"]
+                       max_vals_full = params["max_values_tensor"].to(device)
+                       max_vals_u = max_vals_full[:3] # u is first 3 dimensions
+                       
+                       gt_disp_phys = oka_denormalize(norm_gt_disp, max_vals_u, alpha)
+                       
+                       # phys_val is [dx, dy, dz, Sxx, Syy, Szz, Sxy, Syz, Szx]
+                       # Overwrite first 3 elements
+                       all_physical_outputs[fnid][:3] = gt_disp_phys
+
             all_outputs_list.append(all_physical_outputs)
             
             # Prepare next inputs
             all_next_inputs = convert_physical_output_to_input_gnn(all_physical_outputs, neighbor_map, node_params, device)
             
         # Save results
-        save_results(idx, all_outputs_list, datasets, output_dir)
+        save_results(idx, all_outputs_list, all_targets, datasets, node_params, output_dir)
         
         # For now, just print shape of last output
         print(f"Sample {idx+1} completed. Steps: {len(all_outputs_list)}")
-        save_results(idx, all_outputs_list, datasets, output_dir)
 
-def save_results(idx, all_outputs_list, datasets, output_dir):
+def save_results(idx, all_outputs_list, all_targets, datasets, node_params, output_dir):
     first_node = list(datasets.keys())[0]
     target_file_path = datasets[first_node].files[idx]
     target_file_stem = target_file_path.stem
@@ -353,7 +378,7 @@ def save_results(idx, all_outputs_list, datasets, output_dir):
     
     result_df_list = []
     
-    # Time 2 to T
+    # Time 2 to T (predictions)
     for step, step_outputs in enumerate(all_outputs_list):
         time = step + 2
         # step_outputs is {node_id: tensor}
@@ -395,46 +420,37 @@ def save_results(idx, all_outputs_list, datasets, output_dir):
     result_df = pd.concat([time1_df, result_df], axis=0)
     result_df = result_df.sort_values(['node_id', 'time']).reset_index(drop=True)
     
-    # Reconstruct x, y, z
-    # Initialize with 0
-    result_df['x'] = 0.0
-    result_df['y'] = 0.0
-    result_df['z'] = 0.0
+    # Process Ground Truth from correct_df (directly from file)
+    gt_df = correct_df.copy()
+
+    # Reconstruct x, y, z for result_df (predictions)
     
-    # Set initial positions (time 1)
-    # We map from time1_correct_df
+    # Set initial positions (time 1) from correct_df
     initial_pos_map = time1_correct_df.set_index('node_id')[['x', 'y', 'z']].to_dict('index')
-    
-    # Function to apply initial pos
-    def set_initial(row):
-        if row['time'] == 1:
-            if row['node_id'] in initial_pos_map:
-                return pd.Series(initial_pos_map[row['node_id']])
-        return pd.Series([0.0, 0.0, 0.0], index=['x', 'y', 'z'])
-
-    # Optimization: Set time 1 values directly
-    # result_df is sorted by node_id, time.
-    # Time 1 rows are the first for each node.
-    
-    # Let's use the cumulative sum approach which is faster
-    result_df['cum_dx'] = result_df.groupby('node_id')['dx'].cumsum()
-    result_df['cum_dy'] = result_df.groupby('node_id')['dy'].cumsum()
-    result_df['cum_dz'] = result_df.groupby('node_id')['dz'].cumsum()
-
-    # Get initial x,y,z for each node
-    # We can merge initial positions to the dataframe
     initial_df = time1_correct_df[['node_id', 'x', 'y', 'z']].rename(columns={'x':'init_x', 'y':'init_y', 'z':'init_z'})
-    result_df = pd.merge(result_df, initial_df, on='node_id', how='left')
+    
+    def add_xyz_cols(df):
+        # We assume dataset uses accumulated dx/dy/dz relative to initial
+        df['cum_dx'] = df.groupby('node_id')['dx'].cumsum()
+        df['cum_dy'] = df.groupby('node_id')['dy'].cumsum()
+        df['cum_dz'] = df.groupby('node_id')['dz'].cumsum()
 
-    result_df['x'] = result_df['init_x'] + result_df['cum_dx'] - result_df.groupby('node_id')['dx'].transform('first')
-    result_df['y'] = result_df['init_y'] + result_df['cum_dy'] - result_df.groupby('node_id')['dy'].transform('first')
-    result_df['z'] = result_df['init_z'] + result_df['cum_dz'] - result_df.groupby('node_id')['dz'].transform('first')
+        df = pd.merge(df, initial_df, on='node_id', how='left')
+
+        df['x'] = df['init_x'] + df['cum_dx'] - df.groupby('node_id')['dx'].transform('first')
+        df['y'] = df['init_y'] + df['cum_dy'] - df.groupby('node_id')['dy'].transform('first')
+        df['z'] = df['init_z'] + df['cum_dz'] - df.groupby('node_id')['dz'].transform('first')
+        
+        return df.drop(columns=['cum_dx', 'cum_dy', 'cum_dz', 'init_x', 'init_y', 'init_z'])
+
+    result_df = add_xyz_cols(result_df)
+    # gt_df already has correct x, y, z from file
     
-    # Drop temp columns
-    result_df = result_df.drop(columns=['cum_dx', 'cum_dy', 'cum_dz', 'init_x', 'init_y', 'init_z'])
+    # Merge with ground truth (gt_df)
+    gt_df_renamed = gt_df.add_suffix('_correct')
+    gt_df_renamed = gt_df_renamed.rename(columns={'time_correct': 'time', 'node_id_correct': 'node_id'})
     
-    # Merge with correct_df for errors
-    merged_df = pd.merge(result_df, correct_df, on=['time', 'node_id'], suffixes=('', '_correct'), how='left')
+    merged_df = pd.merge(result_df, gt_df_renamed, on=['time', 'node_id'], how='left')
     
     # Calculate errors
     error_cols = ['x', 'y', 'z', 'dx', 'dy', 'dz', 'Sxx', 'Syy', 'Szz', 'Sxy', 'Syz', 'Szx']
@@ -447,6 +463,8 @@ def save_results(idx, all_outputs_list, datasets, output_dir):
     for col in error_cols:
         if col in merged_df.columns:
             cols_to_keep.append(col)
+        if f'{col}_correct' in merged_df.columns:
+            cols_to_keep.append(f'{col}_correct')
         if f'{col}_error' in merged_df.columns:
             cols_to_keep.append(f'{col}_error')
             

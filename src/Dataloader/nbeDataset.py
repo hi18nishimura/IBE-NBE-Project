@@ -238,7 +238,8 @@ class NbeDataset(Dataset):
 
         if self.preload:
             processed_list: List[Dict[str, torch.Tensor]] = []
-            for fp in tqdm(self.files, desc=f"preload node {self.node_id}"):
+            #for fp in tqdm(self.files, desc=f"preload node {self.node_id}"):
+            for fp in self.files:
                 try:
                     df = pd.read_feather(fp)
                     node_tables = self._extract_node_tables(df)
@@ -322,6 +323,39 @@ class NbeDataset(Dataset):
         targets = torch.tensor(node_tables[1:20, :self.node_feature_counts[self.node_id]],dtype=torch.float32)
 
         return {"inputs": inputs, "targets": targets}
+
+    def get_force_node_info(self, idx: int) -> Dict[int, np.ndarray]:
+        """
+        Get ground truth displacement (dx, dy, dz) for the forced node(s).
+        Returns: {node_id: ndarray(T, 3)}
+        """
+        df = pd.read_feather(self.files[idx])
+        if 'force_node_id' not in df.columns:
+            return {}
+            
+        # Get unique force node IDs (filtering NaNs)
+        fids = df['force_node_id'].unique()
+        fids = fids[~np.isnan(fids)]
+        
+        # Prepare pwidths for dx, dy, dz
+        pwidths = np.array([self.max_map.get(c, 0.0) for c in ["dx", "dy", "dz"]])
+
+        info = {}
+        for fid in fids:
+            fid = int(fid)
+            # data for this node, sorted by time
+            sub = df[df['node_id'] == fid].sort_values('time')
+            if sub.empty:
+                continue
+            # Extract dx, dy, dz
+            disp = sub[['dx', 'dy', 'dz']].values
+
+            # Normalize
+            disp = oka_normalize_array(disp, pwidths, self.alpha)
+
+            info[fid] = disp
+            
+        return info
 
     def _extract_node_tables(self, df: pd.DataFrame):
         """Placeholder extractor.

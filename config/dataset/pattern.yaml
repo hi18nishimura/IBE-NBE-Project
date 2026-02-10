@@ -15,7 +15,7 @@ tumor:
   E: 3.415
   nu: 0.40
 max_disp: 30.0
-train_divisions: 4
+train_divisions: 6
 valid_count: 50
 test_count: 50
 max_nodes: null

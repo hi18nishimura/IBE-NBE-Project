@@ -1,0 +1,43 @@
+# @package _global_
+train_dir: "/workspace/dataset/bin/toy_all_model/train"
+val_dir: "/workspace/dataset/bin/toy_all_model/test"
+node_id: 1
+node_min: null
+node_max: null
+preload: false
+glob: "*.feather"
+alpha: 8.0
+global_normalize: true
+
+# dataloader
+batch_size: 128
+num_workers: 4
+
+# model
+feature_dim: 32
+hidden_dim: 128
+latent_dim: 64
+num_heads: 4
+num_layers_mlp: 3
+output_dim: 9 # output_dim should be 9 since we predict u(3)+sigma(3)+tau(3) for central node? or just u?
+# Based on dataset targets: "merge": merge_targets (u,sigma,tau) -> 3+3+3=9
+#0.2だと安定しなそうだった
+lambda_ae: 0.1
+
+# optimization
+lr: 1e-3
+weight_decay: 0.0
+epochs: 100
+
+# lr/early stopping
+lr_patience: 5
+lr_factor: 0.5
+min_lr: 1e-6
+max_lr_reductions: 3
+early_stop_patience: 10
+lr_decay_start_epoch: 30
+lr_decay_step_size: 10
+
+# misc
+save_dir: "NBE/attention_mlp_train"
+seed: 42

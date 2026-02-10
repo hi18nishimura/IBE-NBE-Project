@@ -1,0 +1,36 @@
+# data
+train_dir: "dataset/bin/toy_all_model/train"
+val_dir: "dataset/bin/toy_all_model/valid"
+node_id: 1
+node_min: null
+node_max: null
+preload: true
+glob: "*.feather"
+alpha: 8.0
+global_normalize: true
+
+# dataloader
+batch_size: 32
+num_workers: 4
+
+# optimization
+lr: 1e-3
+weight_decay: 0.0
+epochs: 300
+
+# Model Architecture
+d_model: 64
+d_ffn: 128
+seq_len: 1
+num_layers: 3
+
+# lr/early stopping parameters
+lr_patience: 5
+lr_factor: 0.5
+min_lr: 1e-6
+lr_decay_start_epoch: 180
+lr_decay_step_size: 30
+
+# misc
+save_dir: "NBE/gated_mlp_train"
+seed: 42
